@@ -26,6 +26,7 @@ std::expected<void, VkResult> CommandEncoder::begin_encoding() {
     if (const auto res = vkBeginCommandBuffer(buffer, &begin_info); res != VK_SUCCESS) {
         return std::unexpected(res);
     }
+    vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bindless_pipeline_layout, 0, 1, &bindless_buffer_set, 0, nullptr);
 
     active = buffer;
     return {};
@@ -94,6 +95,18 @@ void CommandEncoder::transition_textures(const std::span<TextureBarrier>& transi
     dependency_info.imageMemoryBarrierCount = barriers.size();
     dependency_info.pImageMemoryBarriers = barriers.data();
     vkCmdPipelineBarrier2(active, &dependency_info);
+}
+
+void CommandEncoder::bind_pipeline(const Pipeline& pipeline) const {
+    vkCmdBindPipeline(active, pipeline.bind_point, pipeline.pipeline);   
+}
+
+void CommandEncoder::set_push_constants(const std::span<uint32_t>& push_constants) const {
+    vkCmdPushConstants(active, bindless_pipeline_layout, VK_SHADER_STAGE_ALL, 0, 4 * push_constants.size(), push_constants.data());   
+}
+
+void CommandEncoder::draw(const uint32_t vertex_count, const uint32_t instance_count, const uint32_t first_vertex, const uint32_t first_instance) const {
+    vkCmdDraw(active, vertex_count, instance_count, first_vertex, first_instance);   
 }
 
 void CommandEncoder::end_render_pass() const {

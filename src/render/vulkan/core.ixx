@@ -11,6 +11,7 @@ module;
 export module stellar.render.vulkan;
 
 import stellar.render.types;
+import stellar.render.vulkan.shader;
 
 export struct Adapter;
 export struct Device;
@@ -24,12 +25,16 @@ export struct Texture;
 export struct SurfaceTexture;
 export struct Fence;
 export struct Semaphore;
+export struct Buffer;
+export struct ShaderModule;
+export struct Pipeline;
 
 constexpr VkFormat map_texture_format(TextureFormat format);
 constexpr VkCompositeAlphaFlagBitsKHR map_composite_alpha(CompositeAlphaMode alpha);
 constexpr VkPresentModeKHR map_present_mode(PresentMode mode);
 constexpr VkImageLayout map_texture_layout(TextureUsage usage);
 constexpr VkImageAspectFlagBits map_format_aspect(FormatAspect aspect);
+constexpr VkBufferUsageFlags map_buffer_usage(BufferUsage usage);
 
 export struct InstanceDescriptor {
     bool validation;
@@ -60,6 +65,23 @@ export struct TextureBarrier {
     ImageSubresourceRange range;
     TextureUsage before;
     TextureUsage after;
+};
+
+export struct BufferDescriptor {
+    uint64_t size;
+    BufferUsage usage;
+};
+
+export struct PipelineDescriptor {
+    ShaderModule* vertex_shader;
+    ShaderModule* fragment_shader;
+    TextureFormat render_format;
+};
+
+export struct ShaderModuleDescriptor {
+    std::string_view code;
+    std::string entrypoint;
+    ShaderStage stage;
 };
 
 export struct Instance {
@@ -99,6 +121,7 @@ struct Device {
     VkPhysicalDevice adapter{};
     VkInstance instance{};
     VmaAllocator allocator{};
+    ShaderCompiler shader_compiler{};
     
     VkPipelineLayout bindless_pipeline_layout{};
     VkDescriptorPool bindless_descriptor_pool{};
@@ -115,6 +138,9 @@ struct Device {
     void destroy();
 
     std::expected<void, VkResult> wait_for_fence(const Fence& fence) const;
+    size_t add_binding(const Buffer& buffer);
+    void* map_buffer(const Buffer& buffer) const;
+    void unmap_buffer(const Buffer& buffer) const;
 
     std::expected<Swapchain, VkResult> create_swapchain(VkSurfaceKHR surface, uint32_t queue_family, const SurfaceConfiguration& config) const;
     void destroy_swapchain(const Swapchain& swapchain) const;
@@ -124,6 +150,12 @@ struct Device {
     void destroy_fence(const Fence& fence) const;
     std::expected<Semaphore, VkResult> create_semaphore() const;
     void destroy_semaphore(const Semaphore& semaphore) const;
+    std::expected<Buffer, VkResult> create_buffer(const BufferDescriptor& descriptor) const;
+    void destroy_buffer(const Buffer& buffer) const;
+    std::expected<Pipeline, VkResult> create_graphics_pipeline(const PipelineDescriptor& descriptor) const;
+    void destroy_pipeline(const Pipeline& pipeline) const;
+    std::expected<ShaderModule, VkResult> create_shader_module(const ShaderModuleDescriptor& descriptor) const;
+    void destroy_shader_module(const ShaderModule& module) const;
 };
 
 struct Queue {
@@ -162,9 +194,15 @@ struct CommandEncoder {
     std::deque<VkCommandBuffer> free{};
     VkCommandBuffer active{};
 
+    VkDescriptorSet bindless_buffer_set{};
+    VkPipelineLayout bindless_pipeline_layout{};
+
     std::expected<void, VkResult> begin_encoding();
     void begin_render_pass(const RenderPassDescriptor& descriptor) const;
     void transition_textures(const std::span<TextureBarrier>& barriers) const;
+    void bind_pipeline(const Pipeline& pipeline) const;
+    void set_push_constants(const std::span<uint32_t>& push_constants) const;
+    void draw(uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance) const;
     void end_render_pass() const;
     std::expected<CommandBuffer, VkResult> end_encoding();
     void reset_all(const std::span<CommandBuffer>& command_buffers);
@@ -186,6 +224,21 @@ struct SurfaceTexture {
     Texture texture;
     TextureView view;
     uint32_t swapchain_index;
+};
+
+struct Buffer {
+    VkBuffer buffer{};
+    VmaAllocation allocation{};
+};
+
+struct ShaderModule {
+    VkShaderModule module{};
+    std::string entrypoint{};
+};
+
+struct Pipeline {
+    VkPipeline pipeline{};
+    VkPipelineBindPoint bind_point{};
 };
 
 std::expected<void, VkResult> Surface::configure(const Device& device, const Queue& queue, const SurfaceConfiguration& config) {
@@ -327,4 +380,22 @@ constexpr VkImageAspectFlagBits map_format_aspect(const FormatAspect aspect) {
     default:
         std::unreachable();
     }
+}
+
+constexpr VkBufferUsageFlags map_buffer_usage(const BufferUsage usage) {
+    VkBufferUsageFlags flags = 0;
+    if ((usage & BufferUsage::Storage) == BufferUsage::Storage) {
+        flags |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    }
+    if ((usage & BufferUsage::TransferSrc) == BufferUsage::TransferSrc) {
+        flags |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    }
+    if ((usage & BufferUsage::TransferDst) == BufferUsage::TransferDst) {
+        flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    }
+    if ((usage & BufferUsage::Index) == BufferUsage::Index) {
+        flags |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    }
+
+    return flags;
 }

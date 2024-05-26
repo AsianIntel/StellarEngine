@@ -3,6 +3,15 @@ module;
 #include <cstdint>
 #include <type_traits>
 
+#define DEFINE_ENUM_OP(type) \
+    export constexpr type operator&(type lhs, type rhs) { \
+        return static_cast<type>(static_cast<std::underlying_type_t<type>>(lhs) & static_cast<std::underlying_type_t<type>>(rhs)); \
+    } \
+    export constexpr type operator|(type lhs, type rhs) { \
+        return static_cast<type>(static_cast<std::underlying_type_t<type>>(lhs) | static_cast<std::underlying_type_t<type>>(rhs)); \
+    } \
+    
+
 export module stellar.render.types;
 
 export enum class DeviceType {
@@ -46,10 +55,7 @@ export enum class AttachmentOps: uint32_t {
     Load = 0x1,
     Store = 0x2,
 };
-
-export AttachmentOps operator&(AttachmentOps lhs, AttachmentOps rhs) {
-    return static_cast<AttachmentOps>(static_cast<std::underlying_type_t<AttachmentOps>>(lhs) & static_cast<std::underlying_type_t<AttachmentOps>>(rhs));
-}
+DEFINE_ENUM_OP(AttachmentOps)
 
 export struct Color {
     float r;
@@ -73,15 +79,27 @@ export struct ImageSubresourceRange {
 
 export enum class TextureUsage: uint32_t {
     Undefined = 0,
-    Present = 0x1,
-    CopySrc = 0x2,
-    CopyDst = 0x4,
-    RenderTarget = 0x8
+    Present = 1,
+    CopySrc = 1 << 1,
+    CopyDst = 1 << 2,
+    RenderTarget = 1 << 3
 };
+DEFINE_ENUM_OP(TextureUsage)
 
-export TextureUsage operator&(TextureUsage lhs, TextureUsage rhs) {
-    return static_cast<TextureUsage>(static_cast<std::underlying_type_t<TextureUsage>>(lhs) & static_cast<std::underlying_type_t<TextureUsage>>(rhs));
-}
+export enum class BufferUsage: uint32_t {
+    Storage = 1,
+    MapReadWrite = 1 << 1,
+    TransferSrc = 1 << 2,
+    TransferDst = 1 << 3,
+    Index = 1 << 4,
+};
+DEFINE_ENUM_OP(BufferUsage)
+
+export enum class ShaderStage {
+    Vertex = 0,
+    Fragment = 1,
+    Compute = 2,
+};
 
 export struct SurfaceConfiguration {
     Extent3d extent;

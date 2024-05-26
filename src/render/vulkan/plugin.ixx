@@ -4,12 +4,16 @@ module;
 #include <array>
 #include <vulkan/vulkan.hpp>
 #include <expected>
+#include <fstream>
+#include <glm/glm.hpp>
 
 export module stellar.render.vulkan.plugin;
 
 import stellar.render.vulkan;
 import stellar.render.types;
 import stellar.window;
+
+std::string read_file(const std::string& filename);
 
 struct RenderContext {
     Extent3d extent{};
@@ -22,10 +26,16 @@ struct RenderContext {
     Fence render_fence{};
     Semaphore swapchain_semaphore{};
     Semaphore render_semaphore{};
+
+    Pipeline pipeline{};
+    Buffer vertex_buffer{};
+};
+
+struct Vertex {
+    glm::vec4 position;
 };
 
 void render(RenderContext& context) {
-    context.device.wait_for_fence(context.render_fence).value();
     SurfaceTexture surface_texture = context.surface.acquire_texture(context.swapchain_semaphore).value();
 
     context.encoder.begin_encoding().value();
@@ -60,6 +70,11 @@ void render(RenderContext& context) {
         .color_attachments = color_attachments
     });
 
+    context.encoder.bind_pipeline(context.pipeline);
+    std::array<uint32_t, 1> push_constants { 0 };
+    context.encoder.set_push_constants(push_constants);
+    context.encoder.draw(3, 1, 0, 0);
+
     context.encoder.end_render_pass();
 
     {
@@ -89,6 +104,8 @@ void render(RenderContext& context) {
 
     // TODO: Check for window closure
     auto _ = context.queue.present(context.surface, surface_texture, signal_semaphores);
+    context.device.wait_for_fence(context.render_fence).value();
+    context.encoder.reset_all(command_buffers);
 }
 
 export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world) {
@@ -133,7 +150,7 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
     }
     CommandEncoder encoder = command_res.value();
 
-    auto fence_res = device.create_fence(true);
+    auto fence_res = device.create_fence(false);
     if (!fence_res.has_value()) {
         return std::unexpected(fence_res.error());
     }
@@ -151,6 +168,43 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
     }
     Semaphore render_semaphore = semaphore_res.value();
 
+    auto shader_file = read_file("../assets/shaders/triangle.hlsl");
+    ShaderModule vertex_shader = device.create_shader_module(ShaderModuleDescriptor {
+        .code = shader_file,
+        .entrypoint = "VSMain",
+        .stage = ShaderStage::Vertex
+    }).value();
+    ShaderModule fragment_shader = device.create_shader_module(ShaderModuleDescriptor {
+        .code = shader_file,
+        .entrypoint = "PSMain",
+        .stage = ShaderStage::Fragment
+    }).value();
+
+    Pipeline pipeline = device.create_graphics_pipeline(PipelineDescriptor{
+        .vertex_shader = &vertex_shader,
+        .fragment_shader = &fragment_shader,
+        .render_format = TextureFormat::Rgba8Unorm
+    }).value();
+
+    device.destroy_shader_module(vertex_shader);
+    device.destroy_shader_module(fragment_shader);
+
+    std::array vertices {
+        Vertex { .position = glm::vec4(0.0, 0.5, 0.0, 1.0) },
+        Vertex { .position = glm::vec4(-0.5, -0.5, 0.0, 1.0) },
+        Vertex { .position = glm::vec4(0.5, -0.5, 0.0, 1.0) }
+    };
+    Buffer vertex_buffer = device.create_buffer(BufferDescriptor {
+        .size = vertices.size() * sizeof(Vertex),
+        .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
+    }).value();
+    device.add_binding(vertex_buffer);
+    {
+        void* data = device.map_buffer(vertex_buffer);
+        memcpy(data, vertices.data(), vertices.size() * sizeof(Vertex));
+        device.unmap_buffer(vertex_buffer);
+    }
+
     Extent3d extent {
         .width = window->width,
         .height = window->height,
@@ -167,7 +221,9 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
         .encoder = std::move(encoder),
         .render_fence = render_fence,
         .swapchain_semaphore = swapchain_semaphore,
-        .render_semaphore = render_semaphore
+        .render_semaphore = render_semaphore,
+        .pipeline = pipeline,
+        .vertex_buffer = vertex_buffer
     };
     world.set(context);
 
@@ -182,8 +238,8 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
 export void destroy_vulkan(const flecs::world& world) {
     RenderContext* context = world.get_mut<RenderContext>();
 
-    context->device.wait_for_fence(context->render_fence).value();
-
+    context->device.destroy_buffer(context->vertex_buffer);
+    context->device.destroy_pipeline(context->pipeline);
     context->device.destroy_semaphore(context->render_semaphore);
     context->device.destroy_semaphore(context->swapchain_semaphore);
     context->device.destroy_fence(context->render_fence);
@@ -192,4 +248,17 @@ export void destroy_vulkan(const flecs::world& world) {
     context->device.destroy();
     context->instance.destroy_surface(context->surface);
     context->instance.destroy();
+}
+
+std::string read_file(const std::string& filename) {
+    std::ifstream file(filename, std::ios::ate | std::ios::binary);
+
+    size_t file_size = file.tellg();
+    std::vector<char> buffer(file_size);
+    file.seekg(0);
+    file.read(buffer.data(), file_size);
+    file.close();
+
+    std::string res(buffer.data(), buffer.size());
+    return res;
 }

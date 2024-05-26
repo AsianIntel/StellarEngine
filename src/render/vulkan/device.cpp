@@ -49,6 +49,8 @@ std::expected<void, VkResult> Device::initialize() {
         return std::unexpected(res);
     }
 
+    shader_compiler.initialize().value();
+
     // Create bindless descriptor set layout
     VkDescriptorBindingFlags flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
     VkDescriptorSetLayoutBindingFlagsCreateInfo binding_flags {
@@ -108,6 +110,7 @@ void Device::destroy() {
     vkDestroyPipelineLayout(device, bindless_pipeline_layout, nullptr);
     vkDestroyDescriptorPool(device, bindless_descriptor_pool, nullptr);
     vkDestroyDescriptorSetLayout(device, buffer_set_layout, nullptr);
+    vmaDestroyAllocator(allocator);
     vkDestroyDevice(device, nullptr);
     device = nullptr;
 }
@@ -121,6 +124,35 @@ std::expected<void, VkResult> Device::wait_for_fence(const Fence& fence) const {
     }
     
     return {};
+}
+
+size_t Device::add_binding(const Buffer& buffer) {
+    const size_t index = buffer_heap.allocate();
+    VkDescriptorBufferInfo buffer_info;
+    buffer_info.buffer = buffer.buffer;
+    buffer_info.offset = 0;
+    buffer_info.range = VK_WHOLE_SIZE;
+
+    VkWriteDescriptorSet set_write { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    set_write.dstBinding = 0;
+    set_write.dstSet = buffer_heap.set;
+    set_write.descriptorCount = 1;
+    set_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    set_write.dstArrayElement = index;
+    set_write.pBufferInfo = &buffer_info;
+
+    vkUpdateDescriptorSets(device, 1, &set_write, 0, nullptr);
+    return index;
+}
+
+void* Device::map_buffer(const Buffer& buffer) const {
+    void* data;
+    vmaMapMemory(allocator, buffer.allocation, &data);
+    return data;
+}
+
+void Device::unmap_buffer(const Buffer& buffer) const {
+    vmaUnmapMemory(allocator, buffer.allocation);   
 }
 
 std::expected<Swapchain, VkResult> Device::create_swapchain(VkSurfaceKHR surface, uint32_t queue_family, const SurfaceConfiguration& config) const {
@@ -188,6 +220,8 @@ void Device::destroy_swapchain(const Swapchain& swapchain) const {
 std::expected<CommandEncoder, VkResult> Device::create_command_encoder(const CommandEncoderDescriptor& descriptor) const {
     CommandEncoder encoder{};
     encoder.device = device;
+    encoder.bindless_buffer_set = buffer_heap.set;
+    encoder.bindless_pipeline_layout = bindless_pipeline_layout;
 
     VkCommandPoolCreateInfo create_info { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
     create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -233,4 +267,150 @@ std::expected<Semaphore, VkResult> Device::create_semaphore() const {
 
 void Device::destroy_semaphore(const Semaphore& semaphore) const {
     vkDestroySemaphore(device, semaphore.semaphore, nullptr);   
+}
+
+std::expected<Buffer, VkResult> Device::create_buffer(const BufferDescriptor& descriptor) const {
+    VkBufferCreateInfo create_info { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    create_info.size = descriptor.size;
+    create_info.usage = map_buffer_usage(descriptor.usage);
+
+    VmaAllocationCreateInfo alloc_info{};
+    if ((descriptor.usage & BufferUsage::MapReadWrite) == BufferUsage::MapReadWrite) {
+        alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+    } else {
+        alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    }
+
+    Buffer buffer;
+    if (const auto res = vmaCreateBuffer(allocator, &create_info, &alloc_info, &buffer.buffer, &buffer.allocation, nullptr); res != VK_SUCCESS) {
+        return std::unexpected(res);
+    }
+
+    return buffer;
+}
+
+void Device::destroy_buffer(const Buffer& buffer) const {
+    vmaDestroyBuffer(allocator, buffer.buffer, buffer.allocation);
+}
+
+std::expected<Pipeline, VkResult> Device::create_graphics_pipeline(const PipelineDescriptor& descriptor) const {
+    VkPipelineShaderStageCreateInfo vertex_stage { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
+    vertex_stage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertex_stage.module = descriptor.vertex_shader->module;
+    vertex_stage.pName = descriptor.vertex_shader->entrypoint.c_str();
+
+    VkPipelineShaderStageCreateInfo fragment_stage { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
+    fragment_stage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    fragment_stage.module = descriptor.fragment_shader->module;
+    fragment_stage.pName = descriptor.fragment_shader->entrypoint.c_str();
+
+    VkPipelineViewportStateCreateInfo viewport { .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+    viewport.viewportCount = 1;
+    viewport.scissorCount = 1;
+
+    VkPipelineColorBlendAttachmentState color_blend_attachment {};
+    color_blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    color_blend_attachment.blendEnable = false;
+
+    VkPipelineColorBlendStateCreateInfo color_blending { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+    color_blending.logicOpEnable = false;
+    color_blending.logicOp = VK_LOGIC_OP_COPY;
+    color_blending.attachmentCount = 1;
+    color_blending.pAttachments = &color_blend_attachment;
+
+    VkPipelineVertexInputStateCreateInfo vertex_input { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+
+    std::array dynamic_states { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynamic_state_info { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+    dynamic_state_info.dynamicStateCount = dynamic_states.size();
+    dynamic_state_info.pDynamicStates = dynamic_states.data();
+
+    VkPipelineInputAssemblyStateCreateInfo input_assembly { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    input_assembly.primitiveRestartEnable = false;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer { .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer.lineWidth = 1.0f;
+    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+    VkPipelineMultisampleStateCreateInfo multisampling { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+    multisampling.sampleShadingEnable = false;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    multisampling.minSampleShading = 1.0f;
+    multisampling.alphaToCoverageEnable = false;
+    multisampling.alphaToOneEnable = false;
+
+    VkFormat color_attachment_format = map_texture_format(descriptor.render_format);
+    VkPipelineRenderingCreateInfo rendering_info { .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+    rendering_info.colorAttachmentCount = 1;
+    rendering_info.pColorAttachmentFormats = &color_attachment_format;
+
+    VkPipelineDepthStencilStateCreateInfo depth_stencil { .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+    depth_stencil.depthTestEnable = false;
+    depth_stencil.depthWriteEnable = false;
+    depth_stencil.depthCompareOp = VK_COMPARE_OP_NEVER;
+    depth_stencil.depthBoundsTestEnable = false;
+    depth_stencil.stencilTestEnable = false;
+    depth_stencil.minDepthBounds = 0.0f;
+    depth_stencil.maxDepthBounds = 1.0f;
+
+    std::array shader_stages { vertex_stage, fragment_stage };
+    VkGraphicsPipelineCreateInfo create_info { .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+    create_info.pNext = &rendering_info;
+    create_info.stageCount = shader_stages.size();
+    create_info.pStages = shader_stages.data();
+    create_info.pVertexInputState = &vertex_input;
+    create_info.pInputAssemblyState = &input_assembly;
+    create_info.pViewportState = &viewport;
+    create_info.pRasterizationState = &rasterizer;
+    create_info.pMultisampleState = &multisampling;
+    create_info.pColorBlendState = &color_blending;
+    create_info.pDepthStencilState = &depth_stencil;
+    create_info.pDynamicState = &dynamic_state_info;
+    create_info.layout = bindless_pipeline_layout;
+
+    Pipeline pipeline{};
+    pipeline.bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    if (const auto res = vkCreateGraphicsPipelines(device, nullptr, 1, &create_info, nullptr, &pipeline.pipeline); res != VK_SUCCESS) {
+        return std::unexpected(res);
+    }
+
+    return pipeline;    
+}
+
+void Device::destroy_pipeline(const Pipeline& pipeline) const {
+    vkDestroyPipeline(device, pipeline.pipeline, nullptr);
+}
+
+std::expected<ShaderModule, VkResult> Device::create_shader_module(const ShaderModuleDescriptor& descriptor) const {
+    std::string target;
+    switch(descriptor.stage) {
+    case ShaderStage::Vertex:
+        target = "vs_6_5";
+        break;
+    case ShaderStage::Fragment:
+        target = "ps_6_5";
+        break;
+    case ShaderStage::Compute:
+        target = "cs_6_5";
+    }
+    auto shader_code = shader_compiler.compile(descriptor.code, descriptor.entrypoint, target);
+
+    VkShaderModuleCreateInfo create_info { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+    create_info.codeSize = shader_code.size();
+    create_info.pCode = reinterpret_cast<uint32_t*>(shader_code.data());
+
+    ShaderModule module;
+    module.entrypoint = descriptor.entrypoint;
+    if (const auto res = vkCreateShaderModule(device, &create_info, nullptr, &module.module); res != VK_SUCCESS) {
+        return std::unexpected(res);
+    }
+
+    return module;
+}
+
+void Device::destroy_shader_module(const ShaderModule& module) const {
+    vkDestroyShaderModule(device, module.module, nullptr);   
 }

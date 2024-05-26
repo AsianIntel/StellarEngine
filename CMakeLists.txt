@@ -42,7 +42,12 @@ target_sources(StellarEngine PUBLIC FILE_SET all_modules TYPE CXX_MODULES FILES
     "src/render/vulkan/core.ixx"
     "src/render/vulkan/types.ixx"
     "src/render/vulkan/plugin.ixx"
+    "src/render/vulkan/shader_compiler.ixx"
     "src/window/window.ixx"
 )
-target_link_libraries(StellarEngine PRIVATE Vulkan::Vulkan glm flecs::flecs_static GPUOpen::VulkanMemoryAllocator)
+target_link_libraries(StellarEngine PRIVATE Vulkan::Vulkan glm flecs::flecs_static GPUOpen::VulkanMemoryAllocator dxcompiler.lib)
 target_include_directories(StellarEngine PRIVATE "src")
+
+if (MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
