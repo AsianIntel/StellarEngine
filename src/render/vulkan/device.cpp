@@ -348,9 +348,18 @@ std::expected<Pipeline, VkResult> Device::create_graphics_pipeline(const Pipelin
     rendering_info.pColorAttachmentFormats = &color_attachment_format;
 
     VkPipelineDepthStencilStateCreateInfo depth_stencil { .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
-    depth_stencil.depthTestEnable = false;
-    depth_stencil.depthWriteEnable = false;
-    depth_stencil.depthCompareOp = VK_COMPARE_OP_NEVER;
+    if (descriptor.depth_stencil.has_value()) {
+        const DepthStencilState& depth_stencil_state = descriptor.depth_stencil.value();
+        depth_stencil.depthTestEnable = true;
+        depth_stencil.depthWriteEnable = depth_stencil_state.depth_write_enabled;
+        depth_stencil.depthCompareOp = map_compare_function(depth_stencil_state.compare);
+
+        rendering_info.depthAttachmentFormat = map_texture_format(depth_stencil_state.format);
+    } else {
+        depth_stencil.depthTestEnable = false;
+        depth_stencil.depthWriteEnable = false;
+        depth_stencil.depthCompareOp = VK_COMPARE_OP_NEVER;
+    }
     depth_stencil.depthBoundsTestEnable = false;
     depth_stencil.stencilTestEnable = false;
     depth_stencil.minDepthBounds = 0.0f;
@@ -413,4 +422,62 @@ std::expected<ShaderModule, VkResult> Device::create_shader_module(const ShaderM
 
 void Device::destroy_shader_module(const ShaderModule& module) const {
     vkDestroyShaderModule(device, module.module, nullptr);   
+}
+
+std::expected<Texture, VkResult> Device::create_texture(const TextureDescriptor& descriptor) const {
+    VkImageCreateInfo create_info { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    create_info.imageType = map_image_type(descriptor.dimension);
+    create_info.format = map_texture_format(descriptor.format);
+    create_info.extent.width = descriptor.size.width;
+    create_info.extent.height = descriptor.size.height;
+    create_info.extent.depth = 1;
+    create_info.mipLevels = descriptor.mip_level_count;
+    create_info.arrayLayers = 1;
+    create_info.samples = static_cast<VkSampleCountFlagBits>(descriptor.sample_count);
+    create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    create_info.usage = map_texture_usage(descriptor.usage);
+    create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VmaAllocationCreateInfo alloc_info {
+        .usage = VMA_MEMORY_USAGE_GPU_ONLY
+    };
+
+    Texture texture{};
+    texture.format = descriptor.format;
+    if (const auto res = vmaCreateImage(allocator, &create_info, &alloc_info, &texture.texture, &texture.allocation, nullptr); res != VK_SUCCESS) {
+        return std::unexpected(res);
+    }
+
+    return texture;
+}
+
+void Device::destroy_texture(const Texture& texture) const {
+    vmaDestroyImage(allocator, texture.texture, texture.allocation);   
+}
+
+std::expected<TextureView, VkResult> Device::create_texture_view(const Texture& texture, const TextureViewDescriptor& descriptor) const {
+    VkImageViewCreateInfo create_info { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    create_info.image = texture.texture;
+    create_info.viewType = map_image_view_type(descriptor.dimension);
+    create_info.format = map_texture_format(texture.format);
+    create_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+    create_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+    create_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+    create_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+    create_info.subresourceRange.aspectMask = map_format_aspect(descriptor.range.aspect);
+    create_info.subresourceRange.baseMipLevel = descriptor.range.base_mip_level;
+    create_info.subresourceRange.levelCount = descriptor.range.mip_level_count;
+    create_info.subresourceRange.baseArrayLayer = descriptor.range.base_array_layer;
+    create_info.subresourceRange.layerCount = descriptor.range.array_layer_count;
+
+    TextureView view;
+    if (const auto res = vkCreateImageView(device, &create_info, nullptr, &view.view); res != VK_SUCCESS) {
+        return std::unexpected(res);
+    }
+
+    return view;
+}
+
+void Device::destroy_textue_view(const TextureView& view) const {
+    vkDestroyImageView(device, view.view, nullptr);   
 }

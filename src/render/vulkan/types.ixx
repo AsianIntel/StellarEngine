@@ -77,12 +77,20 @@ export struct ImageSubresourceRange {
     uint32_t array_layer_count;
 };
 
+export enum class TextureDimension {
+    D1,
+    D2,
+    D3
+};
+
 export enum class TextureUsage: uint32_t {
     Undefined = 0,
     Present = 1,
     CopySrc = 1 << 1,
     CopyDst = 1 << 2,
-    RenderTarget = 1 << 3
+    RenderTarget = 1 << 3,
+    DepthRead = 1 << 4,
+    DepthWrite = 1 << 5,
 };
 DEFINE_ENUM_OP(TextureUsage)
 
@@ -106,4 +114,21 @@ export struct SurfaceConfiguration {
     PresentMode present_mode;
     CompositeAlphaMode composite_alpha;
     TextureFormat format;
+};
+
+export enum class CompareFunction {
+    Never,
+    Less,
+    Equal,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    NotEqual,
+    Always
+};
+
+export struct DepthStencilState {
+    TextureFormat format;
+    bool depth_write_enabled;
+    CompareFunction compare;
 };

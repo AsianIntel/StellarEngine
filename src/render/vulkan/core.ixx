@@ -35,6 +35,10 @@ constexpr VkPresentModeKHR map_present_mode(PresentMode mode);
 constexpr VkImageLayout map_texture_layout(TextureUsage usage);
 constexpr VkImageAspectFlagBits map_format_aspect(FormatAspect aspect);
 constexpr VkBufferUsageFlags map_buffer_usage(BufferUsage usage);
+constexpr VkImageType map_image_type(TextureDimension dimension);
+constexpr VkImageViewType map_image_view_type(TextureDimension dimension);
+constexpr VkImageUsageFlags map_texture_usage(TextureUsage usage);
+constexpr VkCompareOp map_compare_function(CompareFunction function);
 
 export struct InstanceDescriptor {
     bool validation;
@@ -55,9 +59,16 @@ export struct ColorAttachment {
     Color clear;
 };
 
+export struct DepthAttachment {
+    Attachment target;
+    AttachmentOps ops;
+    float depth_clear;
+};
+
 export struct RenderPassDescriptor {
     Extent3d extent;
     std::span<ColorAttachment> color_attachments;
+    std::optional<DepthAttachment> depth_attachment;
 };
 
 export struct TextureBarrier {
@@ -76,12 +87,28 @@ export struct PipelineDescriptor {
     ShaderModule* vertex_shader;
     ShaderModule* fragment_shader;
     TextureFormat render_format;
+    std::optional<DepthStencilState> depth_stencil;
 };
 
 export struct ShaderModuleDescriptor {
     std::string_view code;
     std::string entrypoint;
     ShaderStage stage;
+};
+
+export struct TextureDescriptor {
+    Extent3d size;
+    TextureFormat format;
+    TextureUsage usage;
+    TextureDimension dimension;
+    uint32_t mip_level_count;
+    uint32_t sample_count;
+};
+
+export struct TextureViewDescriptor {
+    TextureUsage usage;
+    TextureDimension dimension;
+    ImageSubresourceRange range;
 };
 
 export struct Instance {
@@ -156,6 +183,10 @@ struct Device {
     void destroy_pipeline(const Pipeline& pipeline) const;
     std::expected<ShaderModule, VkResult> create_shader_module(const ShaderModuleDescriptor& descriptor) const;
     void destroy_shader_module(const ShaderModule& module) const;
+    std::expected<Texture, VkResult> create_texture(const TextureDescriptor& descriptor) const;
+    void destroy_texture(const Texture& texture) const;
+    std::expected<TextureView, VkResult> create_texture_view(const Texture& texture, const TextureViewDescriptor& descriptor) const;
+    void destroy_textue_view(const TextureView& view) const;
 };
 
 struct Queue {
@@ -201,8 +232,10 @@ struct CommandEncoder {
     void begin_render_pass(const RenderPassDescriptor& descriptor) const;
     void transition_textures(const std::span<TextureBarrier>& barriers) const;
     void bind_pipeline(const Pipeline& pipeline) const;
+    void bind_index_buffer(const Buffer& buffer) const;
     void set_push_constants(const std::span<uint32_t>& push_constants) const;
     void draw(uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance) const;
+    void draw_indexed(uint32_t index_count, uint32_t instance_count, uint32_t first_index, uint32_t vertex_offset, uint32_t first_instance) const;
     void end_render_pass() const;
     std::expected<CommandBuffer, VkResult> end_encoding();
     void reset_all(const std::span<CommandBuffer>& command_buffers);
@@ -214,6 +247,8 @@ struct CommandBuffer {
 
 struct Texture {
     VkImage texture{};
+    VmaAllocation allocation{};
+    TextureFormat format{};
 };
 
 struct TextureView {
@@ -366,6 +401,10 @@ constexpr VkImageLayout map_texture_layout(const TextureUsage usage) {
         return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     case TextureUsage::RenderTarget:
         return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    case TextureUsage::DepthRead:
+        return VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+    case TextureUsage::DepthWrite:
+        return VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     default:
         std::unreachable();        
     }
@@ -398,4 +437,73 @@ constexpr VkBufferUsageFlags map_buffer_usage(const BufferUsage usage) {
     }
 
     return flags;
+}
+
+constexpr VkImageType map_image_type(const TextureDimension dimension) {
+    switch (dimension) {
+    case TextureDimension::D1:
+        return VK_IMAGE_TYPE_1D;
+    case TextureDimension::D2:
+        return VK_IMAGE_TYPE_2D;
+    case TextureDimension::D3:
+        return VK_IMAGE_TYPE_3D;
+    default:
+        std::unreachable();
+    }
+}
+
+constexpr VkImageViewType map_image_view_type(const TextureDimension dimension) {
+    switch (dimension) {
+    case TextureDimension::D1:
+        return VK_IMAGE_VIEW_TYPE_1D;
+    case TextureDimension::D2:
+        return VK_IMAGE_VIEW_TYPE_2D;
+    case TextureDimension::D3:
+        return VK_IMAGE_VIEW_TYPE_3D;
+    default:
+        std::unreachable();
+    }
+}
+
+constexpr VkImageUsageFlags map_texture_usage(const TextureUsage usage) {
+    VkImageUsageFlags flags = 0;
+    if ((usage & TextureUsage::RenderTarget) == TextureUsage::RenderTarget) {
+        flags |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    }
+    if ((usage & TextureUsage::CopySrc) == TextureUsage::CopySrc) {
+        flags |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    }
+    if ((usage & TextureUsage::CopyDst) == TextureUsage::CopyDst) {
+        flags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    }
+    if ((usage & TextureUsage::DepthRead) == TextureUsage::DepthRead) {
+        flags |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    }
+    if ((usage & TextureUsage::DepthWrite) == TextureUsage::DepthWrite) {
+        flags |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    }
+    return flags;
+}
+
+constexpr VkCompareOp map_compare_function(const CompareFunction function) {
+    switch (function) {
+    case CompareFunction::Never:
+        return VK_COMPARE_OP_NEVER;
+    case CompareFunction::Less:
+        return VK_COMPARE_OP_LESS;
+    case CompareFunction::Equal:
+        return VK_COMPARE_OP_EQUAL;
+    case CompareFunction::LessEqual:
+        return VK_COMPARE_OP_LESS_OR_EQUAL;
+    case CompareFunction::Greater:
+        return VK_COMPARE_OP_GREATER;
+    case CompareFunction::GreaterEqual:
+        return VK_COMPARE_OP_GREATER_OR_EQUAL;
+    case CompareFunction::NotEqual:
+        return VK_COMPARE_OP_NOT_EQUAL;
+    case CompareFunction::Always:
+        return VK_COMPARE_OP_ALWAYS;
+    default:
+        std::unreachable();
+    }
 }

@@ -5,15 +5,24 @@ module;
 #include <vulkan/vulkan.hpp>
 #include <expected>
 #include <fstream>
-#include <glm/glm.hpp>
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#include <glm/mat4x4.hpp>
+#include <glm/ext/matrix_clip_space.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 export module stellar.render.vulkan.plugin;
 
 import stellar.render.vulkan;
 import stellar.render.types;
+import stellar.render.primitives;
 import stellar.window;
 
 std::string read_file(const std::string& filename);
+
+struct ViewUniform {
+    glm::mat4 projection;
+    glm::mat4 view;
+};
 
 struct RenderContext {
     Extent3d extent{};
@@ -29,10 +38,13 @@ struct RenderContext {
 
     Pipeline pipeline{};
     Buffer vertex_buffer{};
-};
+    Buffer index_buffer{};
+    Buffer view_buffer{};
+    Texture depth_texture{};
+    TextureView depth_texture_view{};
 
-struct Vertex {
-    glm::vec4 position;
+    uint32_t vertex_buffer_index{};
+    uint32_t view_buffer_index{};
 };
 
 void render(RenderContext& context) {
@@ -65,15 +77,22 @@ void render(RenderContext& context) {
             .clear = Color { 0.0, 0.0, 0.0, 1.0 }
         }
     };
+    DepthAttachment depth_attachment {
+        .target = Attachment { .view = &context.depth_texture_view },
+        .ops = AttachmentOps::Store,
+        .depth_clear = 0.0f
+    };
     context.encoder.begin_render_pass(RenderPassDescriptor {
         .extent = context.extent,
-        .color_attachments = color_attachments
+        .color_attachments = color_attachments,
+        .depth_attachment = depth_attachment
     });
 
     context.encoder.bind_pipeline(context.pipeline);
-    std::array<uint32_t, 1> push_constants { 0 };
+    context.encoder.bind_index_buffer(context.index_buffer);
+    std::array push_constants { context.vertex_buffer_index, context.view_buffer_index };
     context.encoder.set_push_constants(push_constants);
-    context.encoder.draw(3, 1, 0, 0);
+    context.encoder.draw_indexed(36, 1, 0, 0, 0);
 
     context.encoder.end_render_pass();
 
@@ -183,27 +202,77 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
     Pipeline pipeline = device.create_graphics_pipeline(PipelineDescriptor{
         .vertex_shader = &vertex_shader,
         .fragment_shader = &fragment_shader,
-        .render_format = TextureFormat::Rgba8Unorm
+        .render_format = TextureFormat::Rgba8Unorm,
+        .depth_stencil = DepthStencilState {
+            .format = TextureFormat::D32,
+            .depth_write_enabled = true,
+            .compare = CompareFunction::GreaterEqual
+        }
     }).value();
 
     device.destroy_shader_module(vertex_shader);
     device.destroy_shader_module(fragment_shader);
 
-    std::array vertices {
-        Vertex { .position = glm::vec4(0.0, 0.5, 0.0, 1.0) },
-        Vertex { .position = glm::vec4(-0.5, -0.5, 0.0, 1.0) },
-        Vertex { .position = glm::vec4(0.5, -0.5, 0.0, 1.0) }
-    };
+    const Mesh cube_mesh = cube(1.0f);
     Buffer vertex_buffer = device.create_buffer(BufferDescriptor {
-        .size = vertices.size() * sizeof(Vertex),
+        .size = cube_mesh.vertices.size() * sizeof(Vertex),
         .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
     }).value();
-    device.add_binding(vertex_buffer);
+    uint32_t vertex_buffer_index = device.add_binding(vertex_buffer);
     {
         void* data = device.map_buffer(vertex_buffer);
-        memcpy(data, vertices.data(), vertices.size() * sizeof(Vertex));
+        memcpy(data, cube_mesh.vertices.data(), cube_mesh.vertices.size() * sizeof(Vertex));
         device.unmap_buffer(vertex_buffer);
     }
+    Buffer index_buffer = device.create_buffer(BufferDescriptor {
+        .size = cube_mesh.indices.value().size() * sizeof(uint32_t),
+        .usage = BufferUsage::Index | BufferUsage::MapReadWrite
+    }).value();
+    {
+        void* data = device.map_buffer(index_buffer);
+        memcpy(data, cube_mesh.indices.value().data(), cube_mesh.indices.value().size() * sizeof(uint32_t));
+        device.unmap_buffer(index_buffer);
+    }
+
+    float aspect_ratio = static_cast<float>(window->width) / static_cast<float>(window->height);
+    ViewUniform view {
+        .projection = glm::perspectiveLH(glm::radians(60.0f), aspect_ratio, 10000.0f, 0.01f),
+        .view = glm::lookAtLH(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f))
+    };
+    Buffer view_buffer = device.create_buffer(BufferDescriptor {
+        .size = sizeof(ViewUniform),
+        .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
+    }).value();
+    uint32_t view_buffer_index = device.add_binding(view_buffer);
+    {
+        void* data = device.map_buffer(view_buffer);
+        memcpy(data, &view, sizeof(ViewUniform));
+        device.unmap_buffer(view_buffer);
+    }
+
+    Texture depth_texture = device.create_texture(TextureDescriptor {
+        .size = Extent3d {
+            .width = window->width,
+            .height = window->height,
+            .depth_or_array_layers = 1
+        },
+        .format = TextureFormat::D32,
+        .usage = TextureUsage::DepthWrite,
+        .dimension = TextureDimension::D2,
+        .mip_level_count = 1,
+        .sample_count = 1
+    }).value();
+    TextureView depth_texture_view = device.create_texture_view(depth_texture, TextureViewDescriptor {
+        .usage = TextureUsage::DepthWrite,
+        .dimension = TextureDimension::D2,
+        .range = ImageSubresourceRange {
+            .aspect = FormatAspect::Depth,
+            .base_mip_level = 0,
+            .mip_level_count = 1,
+            .base_array_layer = 0,
+            .array_layer_count = 1
+        }
+    }).value();
 
     Extent3d extent {
         .width = window->width,
@@ -223,7 +292,13 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
         .swapchain_semaphore = swapchain_semaphore,
         .render_semaphore = render_semaphore,
         .pipeline = pipeline,
-        .vertex_buffer = vertex_buffer
+        .vertex_buffer = vertex_buffer,
+        .index_buffer = index_buffer,
+        .view_buffer = view_buffer,
+        .depth_texture = depth_texture,
+        .depth_texture_view = depth_texture_view,
+        .vertex_buffer_index = vertex_buffer_index,
+        .view_buffer_index = view_buffer_index
     };
     world.set(context);
 
@@ -238,6 +313,10 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
 export void destroy_vulkan(const flecs::world& world) {
     RenderContext* context = world.get_mut<RenderContext>();
 
+    context->device.destroy_textue_view(context->depth_texture_view);
+    context->device.destroy_texture(context->depth_texture);
+    context->device.destroy_buffer(context->view_buffer);
+    context->device.destroy_buffer(context->index_buffer);
     context->device.destroy_buffer(context->vertex_buffer);
     context->device.destroy_pipeline(context->pipeline);
     context->device.destroy_semaphore(context->render_semaphore);

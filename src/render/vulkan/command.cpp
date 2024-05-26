@@ -54,6 +54,23 @@ void CommandEncoder::begin_render_pass(const RenderPassDescriptor& descriptor) c
     rendering_info.renderArea.offset = VkOffset2D { 0, 0 };
     rendering_info.renderArea.extent = VkExtent2D { descriptor.extent.width, descriptor.extent.height };
     rendering_info.layerCount = 1;
+
+    if (descriptor.depth_attachment.has_value()) {
+        const DepthAttachment& attachment = descriptor.depth_attachment.value();
+        VkRenderingAttachmentInfo depth_attachment { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+        depth_attachment.imageView = attachment.target.view->view;
+        depth_attachment.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+        if ((attachment.ops & AttachmentOps::Load) == AttachmentOps::Load) {
+            depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        } else {
+            depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            depth_attachment.clearValue = VkClearValue { .depthStencil = VkClearDepthStencilValue { .depth = attachment.depth_clear } };
+        }
+
+        rendering_info.pDepthAttachment = &depth_attachment;
+    }
+    
     vkCmdBeginRendering(active, &rendering_info);
 
     VkViewport viewport;
@@ -101,12 +118,20 @@ void CommandEncoder::bind_pipeline(const Pipeline& pipeline) const {
     vkCmdBindPipeline(active, pipeline.bind_point, pipeline.pipeline);   
 }
 
+void CommandEncoder::bind_index_buffer(const Buffer& buffer) const {
+    vkCmdBindIndexBuffer(active, buffer.buffer, 0, VK_INDEX_TYPE_UINT32);   
+}
+
 void CommandEncoder::set_push_constants(const std::span<uint32_t>& push_constants) const {
     vkCmdPushConstants(active, bindless_pipeline_layout, VK_SHADER_STAGE_ALL, 0, 4 * push_constants.size(), push_constants.data());   
 }
 
 void CommandEncoder::draw(const uint32_t vertex_count, const uint32_t instance_count, const uint32_t first_vertex, const uint32_t first_instance) const {
     vkCmdDraw(active, vertex_count, instance_count, first_vertex, first_instance);   
+}
+
+void CommandEncoder::draw_indexed(const uint32_t index_count, const uint32_t instance_count, const uint32_t first_index, const uint32_t vertex_offset, const uint32_t first_instance) const {
+    vkCmdDrawIndexed(active, index_count, instance_count, first_index, vertex_offset, first_instance);
 }
 
 void CommandEncoder::end_render_pass() const {

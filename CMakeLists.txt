@@ -39,6 +39,7 @@ target_sources(StellarEngine PUBLIC
 )
 target_sources(StellarEngine PUBLIC FILE_SET all_modules TYPE CXX_MODULES FILES
     "src/core/app.ixx"
+    "src/render/primitives.ixx"
     "src/render/vulkan/core.ixx"
     "src/render/vulkan/types.ixx"
     "src/render/vulkan/plugin.ixx"
