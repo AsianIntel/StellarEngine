@@ -216,7 +216,7 @@ struct Surface {
     Swapchain swapchain{};
 
     std::expected<void, VkResult> configure(const Device& device, const Queue& queue, const SurfaceConfiguration& config);
-    std::expected<SurfaceTexture, VkResult> acquire_texture(const Semaphore& semaphore);
+    std::expected<SurfaceTexture, VkResult> acquire_texture(const Semaphore& semaphore) const;
 };
 
 struct CommandEncoder {
@@ -286,7 +286,7 @@ std::expected<void, VkResult> Surface::configure(const Device& device, const Que
     return {};
 }
 
-std::expected<SurfaceTexture, VkResult> Surface::acquire_texture(const Semaphore& semaphore) {
+std::expected<SurfaceTexture, VkResult> Surface::acquire_texture(const Semaphore& semaphore) const {
     uint32_t image_index;
     if (const auto res = vkAcquireNextImageKHR(swapchain.device, swapchain.swapchain, UINT64_MAX, semaphore.semaphore, VK_NULL_HANDLE, &image_index); res != VK_SUCCESS) {
         return std::unexpected(res);

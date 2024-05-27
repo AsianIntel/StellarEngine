@@ -9,6 +9,7 @@ module;
 #include <glm/mat4x4.hpp>
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <iostream>
 
 export module stellar.render.vulkan.plugin;
 
@@ -22,6 +23,26 @@ std::string read_file(const std::string& filename);
 struct ViewUniform {
     glm::mat4 projection;
     glm::mat4 view;
+};
+
+struct GPUMesh {
+    uint32_t vertex_count;
+    uint32_t vertex_offset;
+    std::optional<uint32_t> index_count;
+    std::optional<uint32_t> index_offset;
+};
+
+export struct Material {
+    glm::vec4 color;
+};
+
+export struct Transform {
+    glm::mat4 transform;
+};
+
+template<typename T>
+struct DynamicUniformIndex {
+    uint32_t offset;
 };
 
 struct RenderContext {
@@ -40,17 +61,23 @@ struct RenderContext {
     Buffer vertex_buffer{};
     Buffer index_buffer{};
     Buffer view_buffer{};
+    Buffer material_buffer{};
+    Buffer transform_buffer{};
     Texture depth_texture{};
     TextureView depth_texture_view{};
 
     uint32_t vertex_buffer_index{};
     uint32_t view_buffer_index{};
+    uint32_t material_buffer_index{};
+    uint32_t transform_buffer_index{};
 };
 
-void render(RenderContext& context) {
-    SurfaceTexture surface_texture = context.surface.acquire_texture(context.swapchain_semaphore).value();
-
-    context.encoder.begin_encoding().value();
+void render(flecs::iter& it) {
+    if (!it.next()) return;
+    auto context = it.field<RenderContext>(0);
+    
+    SurfaceTexture surface_texture = context->surface.acquire_texture(context->swapchain_semaphore).value();
+    context->encoder.begin_encoding().value();
 
     {
         std::array barriers {
@@ -67,7 +94,7 @@ void render(RenderContext& context) {
                 .after = TextureUsage::RenderTarget
             }
         };
-        context.encoder.transition_textures(barriers);
+        context->encoder.transition_textures(barriers);
     }
 
     std::array color_attachments {
@@ -78,23 +105,44 @@ void render(RenderContext& context) {
         }
     };
     DepthAttachment depth_attachment {
-        .target = Attachment { .view = &context.depth_texture_view },
+        .target = Attachment { .view = &context->depth_texture_view },
         .ops = AttachmentOps::Store,
         .depth_clear = 0.0f
     };
-    context.encoder.begin_render_pass(RenderPassDescriptor {
-        .extent = context.extent,
+    context->encoder.begin_render_pass(RenderPassDescriptor {
+        .extent = context->extent,
         .color_attachments = color_attachments,
         .depth_attachment = depth_attachment
     });
 
-    context.encoder.bind_pipeline(context.pipeline);
-    context.encoder.bind_index_buffer(context.index_buffer);
-    std::array push_constants { context.vertex_buffer_index, context.view_buffer_index };
-    context.encoder.set_push_constants(push_constants);
-    context.encoder.draw_indexed(36, 1, 0, 0, 0);
+    context->encoder.bind_pipeline(context->pipeline);
+    context->encoder.bind_index_buffer(context->index_buffer);
 
-    context.encoder.end_render_pass();
+    do {
+        auto mesh = it.field<GPUMesh>(1);
+        auto material = it.field<DynamicUniformIndex<Material>>(2);
+        auto transform = it.field<DynamicUniformIndex<Transform>>(3);
+
+        for (const auto i: it) {
+            std::array push_constants {
+                context->vertex_buffer_index,
+                mesh[i].vertex_offset,
+                context->view_buffer_index,
+                context->material_buffer_index,
+                material[i].offset,
+                context->transform_buffer_index,
+                transform[i].offset
+            };
+            context->encoder.set_push_constants(push_constants);
+            if (mesh->index_count.has_value()) {
+                context->encoder.draw_indexed(mesh[i].index_count.value(), 1, mesh[i].index_offset.value(), 0, 0);
+            } else {
+                context->encoder.draw(mesh[i].vertex_count, 1, 0, 0);
+            }
+        }
+    } while (it.next());
+
+    context->encoder.end_render_pass();
 
     {
         std::array barriers {
@@ -111,20 +159,120 @@ void render(RenderContext& context) {
                 .after = TextureUsage::Present
             }
         };
-        context.encoder.transition_textures(barriers);
+        context->encoder.transition_textures(barriers);
     }
     
-    auto command_buffer = context.encoder.end_encoding().value();
+    auto command_buffer = context->encoder.end_encoding().value();
 
-    std::array wait_semaphores { context.swapchain_semaphore };
-    std::array signal_semaphores { context.render_semaphore };
+    std::array wait_semaphores { context->swapchain_semaphore };
+    std::array signal_semaphores { context->render_semaphore };
     std::array command_buffers { command_buffer };
-    context.queue.submit(command_buffers, wait_semaphores, signal_semaphores, context.render_fence).value();
+    context->queue.submit(command_buffers, wait_semaphores, signal_semaphores, context->render_fence).value();
 
     // TODO: Check for window closure
-    auto _ = context.queue.present(context.surface, surface_texture, signal_semaphores);
-    context.device.wait_for_fence(context.render_fence).value();
-    context.encoder.reset_all(command_buffers);
+    auto _ = context->queue.present(context->surface, surface_texture, signal_semaphores);
+    context->device.wait_for_fence(context->render_fence).value();
+    context->encoder.reset_all(command_buffers);
+}
+
+void prepare_meshes(flecs::iter& it) {
+    std::vector<Vertex> all_vertices{};
+    std::vector<uint32_t> all_indices{};
+
+    if (!it.next()) return;
+    auto context = it.field<RenderContext>(0);
+    do {
+        auto mesh = it.field<Mesh>(1);
+
+        for (const auto i: it) {
+            const uint32_t vertex_offset = all_vertices.size();
+            const uint32_t index_offset = all_indices.size();
+            all_vertices.insert(all_vertices.end(), mesh[i].vertices.begin(), mesh[i].vertices.end());
+            GPUMesh gpu_mesh {
+                .vertex_count = static_cast<uint32_t>(mesh[i].vertices.size()),
+                .vertex_offset = vertex_offset
+            };
+            if (mesh[i].indices.has_value()) {
+                all_indices.insert(all_indices.end(), mesh[i].indices.value().begin(), mesh[i].indices.value().end());
+                gpu_mesh.index_count = mesh[i].indices.value().size();
+                gpu_mesh.index_offset = index_offset;
+            }
+            it.entity(i).set(gpu_mesh);
+        }
+    } while(it.next());
+
+    context->vertex_buffer = context->device.create_buffer(BufferDescriptor {
+        .size = all_vertices.size() * sizeof(Vertex),
+        .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
+    }).value();
+    {
+        void* data = context->device.map_buffer(context->vertex_buffer);
+        memcpy(data, all_vertices.data(), all_vertices.size() * sizeof(Vertex));
+        context->device.unmap_buffer(context->vertex_buffer);
+    }
+    context->vertex_buffer_index = context->device.add_binding(context->vertex_buffer);
+
+    context->index_buffer = context->device.create_buffer(BufferDescriptor {
+        .size = all_indices.size() * sizeof(uint32_t),
+        .usage = BufferUsage::Index | BufferUsage::MapReadWrite
+    }).value();
+    {
+        void* data = context->device.map_buffer(context->index_buffer);
+        memcpy(data, all_indices.data(), all_indices.size() * sizeof(uint32_t));
+        context->device.unmap_buffer(context->index_buffer);
+    }
+}
+
+void prepare_materials(flecs::iter& it) {
+    std::vector<Material> all_materials {};
+
+    if (!it.next()) return;
+    auto context = it.field<RenderContext>(0);
+    do {
+        auto material = it.field<Material>(1);
+        for (const auto i: it) {
+            uint32_t index = all_materials.size();
+            all_materials.push_back(material[i]);
+            it.entity(i).set<DynamicUniformIndex<Material>>({ index });
+        }
+    } while (it.next());
+
+    context->material_buffer = context->device.create_buffer(BufferDescriptor {
+        .size = all_materials.size() * sizeof(Material),
+        .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
+    }).value();
+    {
+        void* data = context->device.map_buffer(context->material_buffer);
+        memcpy(data, all_materials.data(), all_materials.size() * sizeof(Material));
+        context->device.unmap_buffer(context->material_buffer);
+    }
+    context->material_buffer_index = context->device.add_binding(context->material_buffer);
+}
+
+void prepare_transforms(flecs::iter& it) {
+    std::vector<Transform> all_transforms{};
+
+    if (!it.next()) return;
+    auto context = it.field<RenderContext>(0);
+    do {
+        auto transform = it.field<Transform>(1);
+        for (const auto i: it) {
+            uint32_t index = all_transforms.size();
+            all_transforms.push_back(transform[i]);
+            it.entity(i).set<DynamicUniformIndex<Transform>>({ index });
+        }
+    } while (it.next());
+
+    context->transform_buffer = context->device.create_buffer(BufferDescriptor {
+        .size = all_transforms.size() * sizeof(Transform),
+        .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
+    }).value();
+    {
+        void* data = context->device.map_buffer(context->transform_buffer);
+        memcpy(data, all_transforms.data(), all_transforms.size() * sizeof(Transform));
+        context->device.unmap_buffer(context->transform_buffer);
+    }
+    context->transform_buffer_index = context->device.add_binding(context->transform_buffer);
 }
 
 export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world) {
@@ -213,26 +361,10 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
     device.destroy_shader_module(vertex_shader);
     device.destroy_shader_module(fragment_shader);
 
-    const Mesh cube_mesh = cube(1.0f);
-    Buffer vertex_buffer = device.create_buffer(BufferDescriptor {
-        .size = cube_mesh.vertices.size() * sizeof(Vertex),
-        .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
-    }).value();
-    uint32_t vertex_buffer_index = device.add_binding(vertex_buffer);
-    {
-        void* data = device.map_buffer(vertex_buffer);
-        memcpy(data, cube_mesh.vertices.data(), cube_mesh.vertices.size() * sizeof(Vertex));
-        device.unmap_buffer(vertex_buffer);
-    }
-    Buffer index_buffer = device.create_buffer(BufferDescriptor {
-        .size = cube_mesh.indices.value().size() * sizeof(uint32_t),
-        .usage = BufferUsage::Index | BufferUsage::MapReadWrite
-    }).value();
-    {
-        void* data = device.map_buffer(index_buffer);
-        memcpy(data, cube_mesh.indices.value().data(), cube_mesh.indices.value().size() * sizeof(uint32_t));
-        device.unmap_buffer(index_buffer);
-    }
+    world.component<Mesh>().add(flecs::OnInstantiate, flecs::Inherit);
+    world.component<GPUMesh>().add(flecs::OnInstantiate, flecs::Inherit);
+    world.component<Material>().add(flecs::OnInstantiate, flecs::Inherit);
+    world.component<DynamicUniformIndex<Material>>().add(flecs::OnInstantiate, flecs::Inherit);
 
     float aspect_ratio = static_cast<float>(window->width) / static_cast<float>(window->height);
     ViewUniform view {
@@ -280,6 +412,24 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
         .depth_or_array_layers = 1 
     };
 
+    flecs::entity cube_mesh = world.entity("Cube Asset").set<Mesh>(cube(0.5));
+    flecs::entity material = world.entity("Material").set<Material>(Material { .color = glm::vec4(0.0, 0.0, 1.0, 1.0) });
+
+    {
+        glm::mat4 transform = glm::translate(glm::mat4(1.0f), glm::vec3(1.0, 0.0, 0.0));
+        world.entity("Cube 1")
+            .is_a(cube_mesh)
+            .is_a(material)
+            .set<Transform>(Transform { .transform = transform });
+    }
+    {
+        glm::mat4 transform = glm::translate(glm::mat4(1.0f), glm::vec3(-1.0, 0.0, 0.0));
+        world.entity("Cube 2")
+            .is_a(cube_mesh)
+            .is_a(material)
+            .set<Transform>(Transform { .transform = transform });
+    }
+
     RenderContext context{
         .extent = extent,
         .instance = instance,
@@ -292,20 +442,34 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
         .swapchain_semaphore = swapchain_semaphore,
         .render_semaphore = render_semaphore,
         .pipeline = pipeline,
-        .vertex_buffer = vertex_buffer,
-        .index_buffer = index_buffer,
         .view_buffer = view_buffer,
         .depth_texture = depth_texture,
         .depth_texture_view = depth_texture_view,
-        .vertex_buffer_index = vertex_buffer_index,
         .view_buffer_index = view_buffer_index
     };
     world.set(context);
 
-    world.system<RenderContext>("Render")
-        .term_at(0).singleton()
-        .kind(flecs::OnUpdate)
-        .each(render);
+    world.system<RenderContext, GPUMesh, DynamicUniformIndex<Material>, DynamicUniformIndex<Transform>>("Render")
+        .term_at(0).singleton().inout(flecs::InOut)
+        .kind(flecs::OnStore)
+        .run(render);
+
+    world.system<RenderContext, Mesh>("Prepare Meshes")
+        .term_at(0).singleton().inout(flecs::InOut)
+        .term_at(1).self()
+        .kind(flecs::OnStart)
+        .run(prepare_meshes);
+
+    world.system<RenderContext, Material>("Prepare Materials")
+        .term_at(0).singleton().inout(flecs::InOut)
+        .term_at(1).self()
+        .kind(flecs::OnStart)
+        .run(prepare_materials);
+
+    world.system<RenderContext, Transform>("Prepare Transforms")
+        .term_at(0).singleton().inout(flecs::InOut)
+        .kind(flecs::OnStart)
+        .run(prepare_transforms);
 
     return {};
 }
@@ -315,6 +479,8 @@ export void destroy_vulkan(const flecs::world& world) {
 
     context->device.destroy_textue_view(context->depth_texture_view);
     context->device.destroy_texture(context->depth_texture);
+    context->device.destroy_buffer(context->transform_buffer);
+    context->device.destroy_buffer(context->material_buffer);
     context->device.destroy_buffer(context->view_buffer);
     context->device.destroy_buffer(context->index_buffer);
     context->device.destroy_buffer(context->vertex_buffer);
