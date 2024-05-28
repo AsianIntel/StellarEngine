@@ -26,11 +26,19 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(VMA)
 
+FetchContent_Declare(
+    fastgltf
+    GIT_REPOSITORY https://github.com/spnda/fastgltf
+    GIT_TAG b73f25b68b38d0ca04a6150cadd64e873a0367ca
+)
+FetchContent_MakeAvailable(fastgltf)
+
 find_package(Vulkan REQUIRED)
 
 add_executable(StellarEngine)
 target_sources(StellarEngine PUBLIC 
     "src/main.cpp"
+    "src/core/app.hpp"
     "src/ecs/ecs.hpp"
     "src/render/vulkan/instance.cpp"
 	"src/render/vulkan/adapter.cpp"
@@ -38,15 +46,15 @@ target_sources(StellarEngine PUBLIC
 	"src/render/vulkan/command.cpp"
 )
 target_sources(StellarEngine PUBLIC FILE_SET all_modules TYPE CXX_MODULES FILES
-    "src/core/app.ixx"
     "src/render/primitives.ixx"
     "src/render/vulkan/core.ixx"
     "src/render/vulkan/types.ixx"
     "src/render/vulkan/plugin.ixx"
     "src/render/vulkan/shader_compiler.ixx"
     "src/window/window.ixx"
+    "src/assets/gltf_loader.ixx"
 )
-target_link_libraries(StellarEngine PRIVATE Vulkan::Vulkan glm flecs::flecs_static GPUOpen::VulkanMemoryAllocator dxcompiler.lib)
+target_link_libraries(StellarEngine PRIVATE Vulkan::Vulkan glm flecs::flecs_static GPUOpen::VulkanMemoryAllocator fastgltf dxcompiler.lib)
 target_include_directories(StellarEngine PRIVATE "src")
 
 if (MSVC)

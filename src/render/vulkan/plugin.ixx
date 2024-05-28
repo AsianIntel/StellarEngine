@@ -23,6 +23,7 @@ std::string read_file(const std::string& filename);
 struct ViewUniform {
     glm::mat4 projection;
     glm::mat4 view;
+    glm::vec4 position;
 };
 
 struct GPUMesh {
@@ -36,8 +37,13 @@ export struct Material {
     glm::vec4 color;
 };
 
-export struct Transform {
+export struct GlobalTransform {
     glm::mat4 transform;
+};
+
+export struct Light {
+    glm::vec4 color;
+    glm::vec4 position;
 };
 
 template<typename T>
@@ -63,6 +69,7 @@ struct RenderContext {
     Buffer view_buffer{};
     Buffer material_buffer{};
     Buffer transform_buffer{};
+    Buffer light_buffer{};
     Texture depth_texture{};
     TextureView depth_texture_view{};
 
@@ -70,6 +77,7 @@ struct RenderContext {
     uint32_t view_buffer_index{};
     uint32_t material_buffer_index{};
     uint32_t transform_buffer_index{};
+    uint32_t light_buffer_index{};
 };
 
 void render(flecs::iter& it) {
@@ -121,7 +129,7 @@ void render(flecs::iter& it) {
     do {
         auto mesh = it.field<GPUMesh>(1);
         auto material = it.field<DynamicUniformIndex<Material>>(2);
-        auto transform = it.field<DynamicUniformIndex<Transform>>(3);
+        auto transform = it.field<DynamicUniformIndex<GlobalTransform>>(3);
 
         for (const auto i: it) {
             std::array push_constants {
@@ -131,7 +139,9 @@ void render(flecs::iter& it) {
                 context->material_buffer_index,
                 material[i].offset,
                 context->transform_buffer_index,
-                transform[i].offset
+                transform[i].offset,
+                context->light_buffer_index,
+                static_cast<uint32_t>(context->light_buffer.size / sizeof(Light))
             };
             context->encoder.set_push_constants(push_constants);
             if (mesh->index_count.has_value()) {
@@ -250,29 +260,55 @@ void prepare_materials(flecs::iter& it) {
 }
 
 void prepare_transforms(flecs::iter& it) {
-    std::vector<Transform> all_transforms{};
+    std::vector<GlobalTransform> all_transforms{};
 
     if (!it.next()) return;
     auto context = it.field<RenderContext>(0);
     do {
-        auto transform = it.field<Transform>(1);
+        auto transform = it.field<GlobalTransform>(1);
         for (const auto i: it) {
             uint32_t index = all_transforms.size();
             all_transforms.push_back(transform[i]);
-            it.entity(i).set<DynamicUniformIndex<Transform>>({ index });
+            it.entity(i).set<DynamicUniformIndex<GlobalTransform>>({ index });
         }
     } while (it.next());
 
     context->transform_buffer = context->device.create_buffer(BufferDescriptor {
-        .size = all_transforms.size() * sizeof(Transform),
+        .size = all_transforms.size() * sizeof(GlobalTransform),
         .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
     }).value();
     {
         void* data = context->device.map_buffer(context->transform_buffer);
-        memcpy(data, all_transforms.data(), all_transforms.size() * sizeof(Transform));
+        memcpy(data, all_transforms.data(), all_transforms.size() * sizeof(GlobalTransform));
         context->device.unmap_buffer(context->transform_buffer);
     }
     context->transform_buffer_index = context->device.add_binding(context->transform_buffer);
+}
+
+void prepare_lights(flecs::iter& it) {
+    std::vector<Light> all_lights{};
+
+    if (!it.next()) return;
+    auto context = it.field<RenderContext>(0);
+    do {
+        auto light = it.field<Light>(1);
+        for (const auto i: it) {
+            uint32_t index = all_lights.size();
+            all_lights.push_back(light[i]);
+            it.entity(i).set<DynamicUniformIndex<Light>>({ index });
+        }
+    } while (it.next());
+
+    context->light_buffer = context->device.create_buffer(BufferDescriptor {
+        .size = all_lights.size() * sizeof(Light),
+        .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
+    }).value();
+    {
+        void* data = context->device.map_buffer(context->light_buffer);
+        memcpy(data, all_lights.data(), all_lights.size() * sizeof(Light));
+        context->device.unmap_buffer(context->light_buffer);
+    }
+    context->light_buffer_index = context->device.add_binding(context->light_buffer);
 }
 
 export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world) {
@@ -335,7 +371,7 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
     }
     Semaphore render_semaphore = semaphore_res.value();
 
-    auto shader_file = read_file("../assets/shaders/triangle.hlsl");
+    auto shader_file = read_file("../assets/shaders/mesh.hlsl");
     ShaderModule vertex_shader = device.create_shader_module(ShaderModuleDescriptor {
         .code = shader_file,
         .entrypoint = "VSMain",
@@ -369,7 +405,8 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
     float aspect_ratio = static_cast<float>(window->width) / static_cast<float>(window->height);
     ViewUniform view {
         .projection = glm::perspectiveLH(glm::radians(60.0f), aspect_ratio, 10000.0f, 0.01f),
-        .view = glm::lookAtLH(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f))
+        .view = glm::lookAtLH(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f)),
+        .position = glm::vec4(2.0f, 2.0f, 2.0f, 1.0f)
     };
     Buffer view_buffer = device.create_buffer(BufferDescriptor {
         .size = sizeof(ViewUniform),
@@ -412,24 +449,6 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
         .depth_or_array_layers = 1 
     };
 
-    flecs::entity cube_mesh = world.entity("Cube Asset").set<Mesh>(cube(0.5));
-    flecs::entity material = world.entity("Material").set<Material>(Material { .color = glm::vec4(0.0, 0.0, 1.0, 1.0) });
-
-    {
-        glm::mat4 transform = glm::translate(glm::mat4(1.0f), glm::vec3(1.0, 0.0, 0.0));
-        world.entity("Cube 1")
-            .is_a(cube_mesh)
-            .is_a(material)
-            .set<Transform>(Transform { .transform = transform });
-    }
-    {
-        glm::mat4 transform = glm::translate(glm::mat4(1.0f), glm::vec3(-1.0, 0.0, 0.0));
-        world.entity("Cube 2")
-            .is_a(cube_mesh)
-            .is_a(material)
-            .set<Transform>(Transform { .transform = transform });
-    }
-
     RenderContext context{
         .extent = extent,
         .instance = instance,
@@ -449,7 +468,7 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
     };
     world.set(context);
 
-    world.system<RenderContext, GPUMesh, DynamicUniformIndex<Material>, DynamicUniformIndex<Transform>>("Render")
+    world.system<RenderContext, GPUMesh, DynamicUniformIndex<Material>, DynamicUniformIndex<GlobalTransform>>("Render")
         .term_at(0).singleton().inout(flecs::InOut)
         .kind(flecs::OnStore)
         .run(render);
@@ -466,10 +485,15 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
         .kind(flecs::OnStart)
         .run(prepare_materials);
 
-    world.system<RenderContext, Transform>("Prepare Transforms")
+    world.system<RenderContext, GlobalTransform>("Prepare Transforms")
         .term_at(0).singleton().inout(flecs::InOut)
         .kind(flecs::OnStart)
         .run(prepare_transforms);
+
+    world.system<RenderContext, Light>("Prepare Lights")
+        .term_at(0).singleton().inout(flecs::InOut)
+        .kind(flecs::OnStart)
+        .run(prepare_lights);
 
     return {};
 }
@@ -477,8 +501,9 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
 export void destroy_vulkan(const flecs::world& world) {
     RenderContext* context = world.get_mut<RenderContext>();
 
-    context->device.destroy_textue_view(context->depth_texture_view);
+    context->device.destroy_texture_view(context->depth_texture_view);
     context->device.destroy_texture(context->depth_texture);
+    context->device.destroy_buffer(context->light_buffer);
     context->device.destroy_buffer(context->transform_buffer);
     context->device.destroy_buffer(context->material_buffer);
     context->device.destroy_buffer(context->view_buffer);

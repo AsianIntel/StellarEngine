@@ -186,7 +186,7 @@ struct Device {
     std::expected<Texture, VkResult> create_texture(const TextureDescriptor& descriptor) const;
     void destroy_texture(const Texture& texture) const;
     std::expected<TextureView, VkResult> create_texture_view(const Texture& texture, const TextureViewDescriptor& descriptor) const;
-    void destroy_textue_view(const TextureView& view) const;
+    void destroy_texture_view(const TextureView& view) const;
 };
 
 struct Queue {
@@ -264,6 +264,7 @@ struct SurfaceTexture {
 struct Buffer {
     VkBuffer buffer{};
     VmaAllocation allocation{};
+    uint64_t size{};
 };
 
 struct ShaderModule {

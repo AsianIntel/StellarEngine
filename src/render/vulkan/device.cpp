@@ -282,6 +282,7 @@ std::expected<Buffer, VkResult> Device::create_buffer(const BufferDescriptor& de
     }
 
     Buffer buffer;
+    buffer.size = descriptor.size;
     if (const auto res = vmaCreateBuffer(allocator, &create_info, &alloc_info, &buffer.buffer, &buffer.allocation, nullptr); res != VK_SUCCESS) {
         return std::unexpected(res);
     }
@@ -478,6 +479,6 @@ std::expected<TextureView, VkResult> Device::create_texture_view(const Texture& 
     return view;
 }
 
-void Device::destroy_textue_view(const TextureView& view) const {
+void Device::destroy_texture_view(const TextureView& view) const {
     vkDestroyImageView(device, view.view, nullptr);   
 }
