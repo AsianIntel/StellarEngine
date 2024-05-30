@@ -10,6 +10,8 @@ struct Vertex {
     float4 normal;
     float2 uv;
     float2 padding;
+    uint4 joints;
+    float4 weights;
 };
 
 struct View {
@@ -33,26 +35,39 @@ struct Light {
 
 struct PushConstants {
     uint vertex_buffer_index;
-    uint view_buffer_index;
     uint vertex_buffer_offset;
+    uint view_buffer_index;
     uint material_buffer_index;
     uint material_buffer_offset;
     uint transform_buffer_index;
     uint transform_buffer_offset;
     uint light_buffer_index;
     uint light_count;
+    uint joint_buffer_index;
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> push_constants: register(b0, space0);
 [[vk::binding(0, 0)]] ByteAddressBuffer bindless_buffers[]: register(t1);
 
+float4x4 get_skin_matrix(Vertex vertex) {
+    float4x4 joint0 = bindless_buffers[push_constants.joint_buffer_index].Load<float4x4>(64*vertex.joints.x);
+    float4x4 joint1 = bindless_buffers[push_constants.joint_buffer_index].Load<float4x4>(64*vertex.joints.y);
+    float4x4 joint2 = bindless_buffers[push_constants.joint_buffer_index].Load<float4x4>(64*vertex.joints.z);
+    float4x4 joint3 = bindless_buffers[push_constants.joint_buffer_index].Load<float4x4>(64*vertex.joints.w);
+
+    float4x4 skin_matrix = vertex.weights.x * joint0 + vertex.weights.y * joint1 + vertex.weights.z * joint2 + vertex.weights.w * joint3;
+    return skin_matrix;
+}
+
 PSInput VSMain(uint vertex_id: SV_VertexId) {
-    Vertex vertex = bindless_buffers[push_constants.vertex_buffer_index].Load<Vertex>(48 * (push_constants.vertex_buffer_offset + vertex_id));
+    Vertex vertex = bindless_buffers[push_constants.vertex_buffer_index].Load<Vertex>(80 * (push_constants.vertex_buffer_offset + vertex_id));
     View view = bindless_buffers[push_constants.view_buffer_index].Load<View>(0);
     Material material = bindless_buffers[push_constants.material_buffer_index].Load<Material>(push_constants.material_buffer_offset * 16);
     Transform transform = bindless_buffers[push_constants.transform_buffer_index].Load<Transform>(push_constants.transform_buffer_offset * 64);
 
-    vertex.position = mul(transform.transform, vertex.position);
+    float4x4 skin_matrix = get_skin_matrix(vertex);    
+
+    vertex.position = mul(skin_matrix, vertex.position);
     float4 frag_pos = vertex.position;
     vertex.position = mul(view.view, vertex.position);
     vertex.position = mul(view.projection, vertex.position);

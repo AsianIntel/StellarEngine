@@ -10,12 +10,15 @@ module;
 #include <glm/vec3.hpp>
 #include <glm/vec2.hpp>
 #include <glm/mat4x4.hpp>
+#include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtx/quaternion.hpp>
 
 export module stellar.assets.gltf;
 
 import stellar.render.vulkan.plugin;
 import stellar.render.primitives;
+import stellar.animation;
+import stellar.scene.transform;
 
 export struct GltfMesh {
     Mesh mesh;
@@ -24,15 +27,23 @@ export struct GltfMesh {
 
 export struct GltfNode {
     std::optional<uint32_t> mesh;
-    glm::mat4 transform;
+    std::optional<uint32_t> joint;
+    Transform transform;
     std::vector<uint32_t> children;
     std::optional<uint32_t> parent;
+};
+
+export struct GltfJoint {
+    Joint joint;
+    uint32_t node_index;
 };
 
 export struct Gltf {
     std::vector<GltfMesh> meshes;
     std::vector<Material> materials;
     std::vector<GltfNode> nodes;
+    std::vector<GltfJoint> joints;
+    std::vector<AnimationClip> animations;
     std::vector<uint32_t> top_nodes;
 };
 
@@ -69,6 +80,58 @@ export std::expected<Gltf, std::string> load_gltf(std::filesystem::path file_pat
     std::vector<GltfMesh> meshes;
     std::vector<GltfNode> nodes;
     std::vector<uint32_t> top_nodes;
+    std::vector<GltfJoint> joints;
+    std::vector<AnimationClip> animations;
+    
+    for (fastgltf::Animation& animation: gltf.animations) {
+        std::vector<std::vector<AnimationCurve>> curves(gltf.nodes.size());
+        float duration = 0;
+        for (fastgltf::AnimationChannel& channel: animation.channels) {
+            fastgltf::AnimationSampler& sampler = animation.samplers[channel.samplerIndex];
+            fastgltf::Accessor& output_accessor = gltf.accessors[sampler.outputAccessor];
+            fastgltf::Accessor& input_accessor = gltf.accessors[sampler.inputAccessor];
+            
+            AnimationCurve& curve = curves[channel.nodeIndex.value()].emplace_back();
+
+            fastgltf::iterateAccessor<float>(gltf, input_accessor, [&](float v) {
+                curve.keyframe_timestamps.push_back(v);
+            });
+            duration = std::max(*std::ranges::max_element(curve.keyframe_timestamps.begin(), curve.keyframe_timestamps.end()), duration);
+            
+            if (channel.path == fastgltf::AnimationPath::Rotation) {
+                std::vector<glm::quat> rotations;
+                fastgltf::iterateAccessor<glm::vec4>(gltf, output_accessor, [&](glm::vec4 v) {
+                    glm::quat quat(v[3], v[0], v[1], v[2]);
+                    rotations.push_back(quat);
+                });
+                curve.keyframes.frames = Keyframes::Rotation { rotations };
+            } else if (channel.path == fastgltf::AnimationPath::Scale) {
+                std::vector<glm::vec3> scales;
+                fastgltf::iterateAccessor<glm::vec3>(gltf, output_accessor, [&](glm::vec3 v) {
+                    scales.push_back(v); 
+                });
+                curve.keyframes.frames = Keyframes::Scale { scales };
+            } else if (channel.path == fastgltf::AnimationPath::Translation) {
+                std::vector<glm::vec3> translations;
+                fastgltf::iterateAccessor<glm::vec3>(gltf, output_accessor, [&](glm::vec3 v) {
+                    translations.push_back(v);
+                });
+                curve.keyframes.frames = Keyframes::Translation { translations };
+            }
+
+            if (sampler.interpolation == fastgltf::AnimationInterpolation::Linear) {
+                curve.interpolation = Interpolation::Linear;
+            } else if (sampler.interpolation == fastgltf::AnimationInterpolation::Step) {
+                curve.interpolation = Interpolation::Step;
+            } else if (sampler.interpolation == fastgltf::AnimationInterpolation::CubicSpline) {
+                curve.interpolation = Interpolation::CubicSpline;
+            }
+        }
+        animations.push_back(AnimationClip {
+            .curves = curves,
+            .duration = duration
+        });
+    }
     
     for (fastgltf::Material& mat: gltf.materials) {
         Material& material = materials.emplace_back();
@@ -76,6 +139,19 @@ export std::expected<Gltf, std::string> load_gltf(std::filesystem::path file_pat
         material.color[1] = mat.pbrData.baseColorFactor[1];
         material.color[2] = mat.pbrData.baseColorFactor[2];
         material.color[3] = mat.pbrData.baseColorFactor[3];
+    }
+
+    for (fastgltf::Skin& skin: gltf.skins) {
+        fastgltf::Accessor& joint_accessor = gltf.accessors[skin.inverseBindMatrices.value()];
+        fastgltf::iterateAccessorWithIndex<glm::mat4>(gltf, joint_accessor, [&](const glm::mat4 m, size_t index) {
+             joints.push_back(GltfJoint {
+                .joint = Joint {
+                    .inverse_bind = m,
+                    .buffer_offset = static_cast<uint32_t>(index)
+                },
+                .node_index = static_cast<uint32_t>(skin.joints[index])
+             });
+        });
     }
 
     for (fastgltf::Mesh& gltf_mesh: gltf.meshes) {
@@ -115,6 +191,20 @@ export std::expected<Gltf, std::string> load_gltf(std::filesystem::path file_pat
                     vertices[initial_vertex + index].uv = v; 
                 });
             }
+
+            auto joints_attribute = p.findAttribute("JOINTS_0");
+            if (joints_attribute != p.attributes.end()) {
+                fastgltf::iterateAccessorWithIndex<glm::uvec4>(gltf, gltf.accessors[joints_attribute->second], [&](glm::uvec4 v, size_t index) {
+                     vertices[initial_vertex + index].joints = v;
+                });
+            }
+
+            auto weights = p.findAttribute("WEIGHTS_0");
+            if (weights != p.attributes.end()) {
+                fastgltf::iterateAccessorWithIndex<glm::vec4>(gltf, gltf.accessors[weights->second], [&](glm::vec4 v, size_t index) {
+                    vertices[initial_vertex + index].weights = v;
+                });
+            }
         }
 
         meshes.push_back(GltfMesh {
@@ -126,36 +216,61 @@ export std::expected<Gltf, std::string> load_gltf(std::filesystem::path file_pat
         });
     }
 
-    for (fastgltf::Node& gltf_node: gltf.nodes) {
+    for (uint32_t i = 0; i < gltf.nodes.size(); i++) {
         GltfNode& node = nodes.emplace_back();
-        if (gltf_node.meshIndex.has_value()) {
-            node.mesh = gltf_node.meshIndex.value();
+        if (gltf.nodes[i].meshIndex.has_value()) {
+            node.mesh = gltf.nodes[i].meshIndex.value();
         }
 
         std::visit(
             fastgltf::visitor{
-                [&](fastgltf::math::fmat4x4 matrix) { memcpy(&node.transform, matrix.data(), sizeof(matrix)); },
+                [&](fastgltf::math::fmat4x4 matrix) {
+                    glm::mat4 mat;
+                    memcpy(&mat, matrix.data(), sizeof(matrix));
+                    glm::vec3 skew;
+                    glm::vec4 perspective;
+                    glm::decompose(mat, node.transform.scale, node.transform.rotation, node.transform.scale, skew, perspective);
+                },
                 [&](fastgltf::TRS transform) {
-                    glm::vec3 translation(transform.translation[0], transform.translation[1], transform.translation[1]);
+                    glm::vec3 translation(transform.translation[0], transform.translation[1], transform.translation[2]);
                     glm::quat rotation(transform.rotation[3], transform.rotation[0], transform.rotation[1], transform.rotation[2]);
                     glm::vec3 scale(transform.scale[0], transform.scale[1], transform.scale[2]);
 
-                    glm::mat4 translation_mat = glm::translate(glm::mat4(1.0f), translation);
-                    glm::mat4 rotation_mat = glm::toMat4(rotation);
-                    glm::mat4 scale_mat = glm::scale(glm::mat4(1.0f), scale);
-
-                    node.transform = translation_mat * rotation_mat * scale_mat;
+                    node.transform.translation = translation;
+                    node.transform.rotation = rotation;
+                    node.transform.scale = scale;
                 }
             },
-            gltf_node.transform
+            gltf.nodes[i].transform
         );
+        for (const AnimationCurve& curve: animations[0].curves[i]) {
+            std::visit(
+            [&](auto&& arg) {
+                const auto index = i;
+                using T = std::decay_t<decltype(arg)>;
+                if constexpr (std::is_same_v<T, Keyframes::Rotation>) {
+                    node.transform.rotation = arg.rotations[0];
+                } else if constexpr (std::is_same_v<T, Keyframes::Translation>) {
+                    node.transform.translation = arg.translations[0];
+                } else if constexpr (std::is_same_v<T, Keyframes::Scale>) {
+                    node.transform.scale = arg.scales[0];
+                }
+            },
+            curve.keyframes.frames
+        );
+        }
+
+        auto it = std::ranges::find_if(joints.begin(), joints.end(), [&](const GltfJoint& joint) { return joint.node_index == i; });
+        if (it != joints.end()) {
+            node.joint = std::distance(joints.begin(), it);
+        }
     }
 
     for (uint32_t i = 0; i < gltf.nodes.size(); i++) {
         fastgltf::Node& node = gltf.nodes[i];
         for (auto& c: node.children) {
             nodes[i].children.push_back(c);
-            nodes[i].parent = i;
+            nodes[c].parent = i;
         }
     }
 
@@ -169,6 +284,8 @@ export std::expected<Gltf, std::string> load_gltf(std::filesystem::path file_pat
         .meshes = meshes,
         .materials = materials,
         .nodes = nodes,
+        .joints = joints,
+        .animations = animations,
         .top_nodes = top_nodes
     };
 }

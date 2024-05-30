@@ -17,6 +17,7 @@ import stellar.render.vulkan;
 import stellar.render.types;
 import stellar.render.primitives;
 import stellar.window;
+import stellar.scene.transform;
 
 std::string read_file(const std::string& filename);
 
@@ -37,13 +38,14 @@ export struct Material {
     glm::vec4 color;
 };
 
-export struct GlobalTransform {
-    glm::mat4 transform;
-};
-
 export struct Light {
     glm::vec4 color;
     glm::vec4 position;
+};
+
+export struct Joint {
+    glm::mat4 inverse_bind;
+    uint32_t buffer_offset;
 };
 
 template<typename T>
@@ -70,6 +72,7 @@ struct RenderContext {
     Buffer material_buffer{};
     Buffer transform_buffer{};
     Buffer light_buffer{};
+    Buffer joint_buffer{};
     Texture depth_texture{};
     TextureView depth_texture_view{};
 
@@ -78,6 +81,7 @@ struct RenderContext {
     uint32_t material_buffer_index{};
     uint32_t transform_buffer_index{};
     uint32_t light_buffer_index{};
+    uint32_t joint_buffer_index{};
 };
 
 void render(flecs::iter& it) {
@@ -141,7 +145,8 @@ void render(flecs::iter& it) {
                 context->transform_buffer_index,
                 transform[i].offset,
                 context->light_buffer_index,
-                static_cast<uint32_t>(context->light_buffer.size / sizeof(Light))
+                static_cast<uint32_t>(context->light_buffer.size / sizeof(Light)),
+                context->joint_buffer_index
             };
             context->encoder.set_push_constants(push_constants);
             if (mesh->index_count.has_value()) {
@@ -260,7 +265,7 @@ void prepare_materials(flecs::iter& it) {
 }
 
 void prepare_transforms(flecs::iter& it) {
-    std::vector<GlobalTransform> all_transforms{};
+    std::vector<glm::mat4> all_transforms{};
 
     if (!it.next()) return;
     auto context = it.field<RenderContext>(0);
@@ -268,21 +273,50 @@ void prepare_transforms(flecs::iter& it) {
         auto transform = it.field<GlobalTransform>(1);
         for (const auto i: it) {
             uint32_t index = all_transforms.size();
-            all_transforms.push_back(transform[i]);
+            all_transforms.push_back(glm::inverse(transform[i].transform));
             it.entity(i).set<DynamicUniformIndex<GlobalTransform>>({ index });
         }
     } while (it.next());
 
-    context->transform_buffer = context->device.create_buffer(BufferDescriptor {
-        .size = all_transforms.size() * sizeof(GlobalTransform),
-        .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
-    }).value();
+    if (context->transform_buffer.buffer == VK_NULL_HANDLE) {
+        context->transform_buffer = context->device.create_buffer(BufferDescriptor {
+            .size = all_transforms.size() * sizeof(GlobalTransform),
+            .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
+        }).value();
+        context->transform_buffer_index = context->device.add_binding(context->transform_buffer);
+    }
     {
         void* data = context->device.map_buffer(context->transform_buffer);
-        memcpy(data, all_transforms.data(), all_transforms.size() * sizeof(GlobalTransform));
+        memcpy(data, all_transforms.data(), all_transforms.size() * sizeof(glm::mat4));
         context->device.unmap_buffer(context->transform_buffer);
     }
-    context->transform_buffer_index = context->device.add_binding(context->transform_buffer);
+}
+
+void prepare_joints(flecs::iter& it) {
+    std::vector<glm::mat4> all_joints(100);
+
+    if (!it.next()) return;
+    auto context = it.field<RenderContext>(0);
+    do {
+        auto joint = it.field<Joint>(1);
+        auto transform = it.field<GlobalTransform>(2);
+        for (const auto i: it) {
+            all_joints[joint[i].buffer_offset] = transform[i].transform * joint[i].inverse_bind;
+        }
+    } while (it.next());
+
+    if (context->joint_buffer.buffer == VK_NULL_HANDLE) {
+        context->joint_buffer = context->device.create_buffer(BufferDescriptor {
+            .size = all_joints.size() * sizeof(glm::mat4),
+            .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
+        }).value();
+        context->joint_buffer_index = context->device.add_binding(context->joint_buffer);
+    }
+    {
+        void* data = context->device.map_buffer(context->joint_buffer);
+        memcpy(data, all_joints.data(), all_joints.size() * sizeof(glm::mat4));
+        context->device.unmap_buffer(context->joint_buffer);
+    }
 }
 
 void prepare_lights(flecs::iter& it) {
@@ -405,8 +439,8 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
     float aspect_ratio = static_cast<float>(window->width) / static_cast<float>(window->height);
     ViewUniform view {
         .projection = glm::perspectiveLH(glm::radians(60.0f), aspect_ratio, 10000.0f, 0.01f),
-        .view = glm::lookAtLH(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f)),
-        .position = glm::vec4(2.0f, 2.0f, 2.0f, 1.0f)
+        .view = glm::lookAtLH(glm::vec3(5.0f, 5.0f, 5.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f)),
+        .position = glm::vec4(5.0f, 5.0f, 5.0f, 1.0f)
     };
     Buffer view_buffer = device.create_buffer(BufferDescriptor {
         .size = sizeof(ViewUniform),
@@ -487,8 +521,13 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
 
     world.system<RenderContext, GlobalTransform>("Prepare Transforms")
         .term_at(0).singleton().inout(flecs::InOut)
-        .kind(flecs::OnStart)
+        .kind(flecs::PreStore)
         .run(prepare_transforms);
+
+    world.system<RenderContext, Joint, GlobalTransform>("Prepare Joints")
+        .term_at(0).singleton().inout(flecs::InOut)
+        .kind(flecs::PreStore)
+        .run(prepare_joints);
 
     world.system<RenderContext, Light>("Prepare Lights")
         .term_at(0).singleton().inout(flecs::InOut)
@@ -503,6 +542,7 @@ export void destroy_vulkan(const flecs::world& world) {
 
     context->device.destroy_texture_view(context->depth_texture_view);
     context->device.destroy_texture(context->depth_texture);
+    context->device.destroy_buffer(context->joint_buffer);
     context->device.destroy_buffer(context->light_buffer);
     context->device.destroy_buffer(context->transform_buffer);
     context->device.destroy_buffer(context->material_buffer);
