@@ -40,10 +40,7 @@ target_sources(StellarEngine PUBLIC
     "src/main.cpp"
     "src/core/app.hpp"
     "src/ecs/ecs.hpp"
-    "src/render/vulkan/instance.cpp"
-	"src/render/vulkan/adapter.cpp"
-	"src/render/vulkan/device.cpp"
-	"src/render/vulkan/command.cpp"
+    "src/render/vulkan/core.cpp"
 )
 target_sources(StellarEngine PUBLIC FILE_SET all_modules TYPE CXX_MODULES FILES
     "src/render/primitives.ixx"
@@ -54,6 +51,7 @@ target_sources(StellarEngine PUBLIC FILE_SET all_modules TYPE CXX_MODULES FILES
     "src/window/window.ixx"
     "src/assets/gltf_loader.ixx"
     "src/animation/animation.ixx"
+    "src/scene/transform.ixx"
 )
 target_link_libraries(StellarEngine PRIVATE Vulkan::Vulkan glm flecs::flecs_static GPUOpen::VulkanMemoryAllocator fastgltf dxcompiler.lib)
 target_include_directories(StellarEngine PRIVATE "src")

@@ -32,7 +32,7 @@ struct App {
 
         std::vector<flecs::entity> materials;
         std::vector<flecs::entity> meshes;
-        Gltf gltf = load_gltf("../assets/archer.glb").value();
+        Gltf gltf = load_gltf("../../../../assets/archer.glb").value();
         for (const auto& material: gltf.materials) {
             flecs::entity entity = world.entity().set<Material>(material);
             materials.push_back(entity);

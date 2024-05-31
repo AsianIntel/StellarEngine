@@ -6,10 +6,7 @@ module;
 #include <fastgltf/util.hpp>
 #include <fastgltf/glm_element_traits.hpp>
 #include <expected>
-#include <glm/vec4.hpp>
-#include <glm/vec3.hpp>
 #include <glm/vec2.hpp>
-#include <glm/mat4x4.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtx/quaternion.hpp>
 
@@ -243,22 +240,6 @@ export std::expected<Gltf, std::string> load_gltf(std::filesystem::path file_pat
             },
             gltf.nodes[i].transform
         );
-        for (const AnimationCurve& curve: animations[0].curves[i]) {
-            std::visit(
-            [&](auto&& arg) {
-                const auto index = i;
-                using T = std::decay_t<decltype(arg)>;
-                if constexpr (std::is_same_v<T, Keyframes::Rotation>) {
-                    node.transform.rotation = arg.rotations[0];
-                } else if constexpr (std::is_same_v<T, Keyframes::Translation>) {
-                    node.transform.translation = arg.translations[0];
-                } else if constexpr (std::is_same_v<T, Keyframes::Scale>) {
-                    node.transform.scale = arg.scales[0];
-                }
-            },
-            curve.keyframes.frames
-        );
-        }
 
         auto it = std::ranges::find_if(joints.begin(), joints.end(), [&](const GltfJoint& joint) { return joint.node_index == i; });
         if (it != joints.end()) {

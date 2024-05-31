@@ -405,7 +405,7 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
     }
     Semaphore render_semaphore = semaphore_res.value();
 
-    auto shader_file = read_file("../assets/shaders/mesh.hlsl");
+    auto shader_file = read_file("../../../../assets/shaders/mesh.hlsl");
     ShaderModule vertex_shader = device.create_shader_module(ShaderModuleDescriptor {
         .code = shader_file,
         .entrypoint = "VSMain",
