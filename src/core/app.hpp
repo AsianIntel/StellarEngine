@@ -1,6 +1,5 @@
 #pragma once
 
-#include <glm/ext/matrix_transform.hpp>
 #include <glm/gtx/quaternion.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 #include "ecs/ecs.hpp"
@@ -13,6 +12,7 @@ import stellar.render.primitives;
 import stellar.assets.gltf;
 import stellar.animation;
 import stellar.scene.transform;
+import stellar.core.result;
 
 struct App {
     flecs::world world{};
@@ -32,7 +32,7 @@ struct App {
 
         std::vector<flecs::entity> materials;
         std::vector<flecs::entity> meshes;
-        Gltf gltf = load_gltf("../../../../assets/archer.glb").value();
+        Gltf gltf = load_gltf("../../assets/archer.glb").unwrap();
         for (const auto& material: gltf.materials) {
             flecs::entity entity = world.entity().set<Material>(material);
             materials.push_back(entity);

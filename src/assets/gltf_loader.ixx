@@ -5,10 +5,11 @@ module;
 #include <fastgltf/tools.hpp>
 #include <fastgltf/util.hpp>
 #include <fastgltf/glm_element_traits.hpp>
-#include <expected>
 #include <glm/vec2.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtx/quaternion.hpp>
+
+#pragma warning(disable : 4267 4244)
 
 export module stellar.assets.gltf;
 
@@ -16,6 +17,7 @@ import stellar.render.vulkan.plugin;
 import stellar.render.primitives;
 import stellar.animation;
 import stellar.scene.transform;
+import stellar.core.result;
 
 export struct GltfMesh {
     Mesh mesh;
@@ -44,7 +46,7 @@ export struct Gltf {
     std::vector<uint32_t> top_nodes;
 };
 
-export std::expected<Gltf, std::string> load_gltf(std::filesystem::path file_path) {
+export Result<Gltf, std::string> load_gltf(std::filesystem::path file_path) {
     fastgltf::Parser parser{};
     constexpr auto gltf_options = fastgltf::Options::DontRequireValidAssetMember
         | fastgltf::Options::AllowDouble
@@ -59,7 +61,7 @@ export std::expected<Gltf, std::string> load_gltf(std::filesystem::path file_pat
             gltf = std::move(load.get());
         } else {
             std::string msg { fastgltf::getErrorMessage(load.error()) };
-            return std::unexpected(msg);
+            return Err(msg);
         }
     } else if (type == fastgltf::GltfType::GLB) {
         auto load = parser.loadGltfBinary(data.get(), file_path.parent_path(), gltf_options);
@@ -67,10 +69,10 @@ export std::expected<Gltf, std::string> load_gltf(std::filesystem::path file_pat
             gltf = std::move(load.get());
         } else {
             std::string msg { fastgltf::getErrorMessage(load.error()) };
-            return std::unexpected(msg);
+            return Err(msg);
         }
     } else {
-        return std::unexpected("Failed to determine gltf type");
+        return Err(std::string("Failed to determine gltf type"));
     }
 
     std::vector<Material> materials;
@@ -261,12 +263,12 @@ export std::expected<Gltf, std::string> load_gltf(std::filesystem::path file_pat
         }
     }
 
-    return Gltf {
+    return Ok(Gltf {
         .meshes = meshes,
         .materials = materials,
         .nodes = nodes,
         .joints = joints,
         .animations = animations,
         .top_nodes = top_nodes
-    };
+    });
 }

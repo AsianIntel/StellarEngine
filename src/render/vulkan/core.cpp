@@ -3,7 +3,6 @@ module;
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vulkan/vulkan.hpp>
 #include <vector>
-#include <expected>
 #include <iostream>
 #define VMA_IMPLEMENTATION
 #include <vk_mem_alloc.h>
@@ -19,7 +18,7 @@ VkResult create_debug_utils_messenger_ext(VkInstance instance, const VkDebugUtil
 void destroy_debug_utils_messenger_ext(VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger,
                                        const VkAllocationCallbacks* pAllocator);
 
-std::expected<void, VkResult> Instance::initialize(const InstanceDescriptor& descriptor) {
+Result<void, VkResult> Instance::initialize(const InstanceDescriptor& descriptor) {
     VkApplicationInfo app_info{};
     app_info.pApplicationName = "Stellar Engine";
     app_info.applicationVersion = VK_MAKE_VERSION(0, 0, 1);
@@ -44,8 +43,8 @@ std::expected<void, VkResult> Instance::initialize(const InstanceDescriptor& des
     create_info.ppEnabledExtensionNames = extensions.data();
     create_info.enabledLayerCount = layers.size();
     create_info.ppEnabledLayerNames = layers.data();
-    if (VkResult res = vkCreateInstance(&create_info, nullptr, &instance); res != VK_SUCCESS) {
-        return std::unexpected(res);
+    if (const VkResult res = vkCreateInstance(&create_info, nullptr, &instance); res != VK_SUCCESS) {
+        return Err(res);
     }
 
     if (descriptor.validation || descriptor.gpu_based_validation) {
@@ -56,13 +55,13 @@ std::expected<void, VkResult> Instance::initialize(const InstanceDescriptor& des
         debug_create_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
             VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
         debug_create_info.pfnUserCallback = debug_callback;
-        if (VkResult res = create_debug_utils_messenger_ext(instance, &debug_create_info, nullptr, &debug_messenger)
+        if (const VkResult res = create_debug_utils_messenger_ext(instance, &debug_create_info, nullptr, &debug_messenger)
             ; res != VK_SUCCESS) {
-            return std::unexpected(res);
+            return Err(res);
         }
     }
 
-    return {};
+    return Ok();
 }
 
 void Instance::destroy() {
@@ -72,14 +71,14 @@ void Instance::destroy() {
     instance = nullptr;
 }
 
-std::expected<std::vector<Adapter>, VkResult> Instance::enumerate_adapters() const {
+Result<std::vector<Adapter>, VkResult> Instance::enumerate_adapters() const {
     uint32_t count = 0;
     if (const auto res = vkEnumeratePhysicalDevices(instance, &count, nullptr); res != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
     std::vector<VkPhysicalDevice> raw_adapters(count);
     if (const auto res = vkEnumeratePhysicalDevices(instance, &count, raw_adapters.data()); res != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
 
     std::vector<Adapter> adapters;
@@ -114,27 +113,27 @@ std::expected<std::vector<Adapter>, VkResult> Instance::enumerate_adapters() con
         });
     }
 
-    return adapters;
+    return Ok(adapters);
 }
 
-std::expected<Surface, VkResult> Instance::create_surface(HWND hwnd, HINSTANCE hinstance) const {
+Result<Surface, VkResult> Instance::create_surface(HWND hwnd, HINSTANCE hinstance) const {
     VkWin32SurfaceCreateInfoKHR create_info{.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
     create_info.hwnd = hwnd;
     create_info.hinstance = hinstance;
     Surface surface{};
     if (const auto res = vkCreateWin32SurfaceKHR(instance, &create_info, nullptr, &surface.surface); res !=
         VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
 
-    return surface;
+    return Ok(surface);
 }
 
 void Instance::destroy_surface(const Surface& surface) const {
     vkDestroySurfaceKHR(instance, surface.surface, nullptr);
 }
 
-std::expected<std::pair<Device, Queue>, VkResult> Adapter::open() const {
+Result<std::pair<Device, Queue>, VkResult> Adapter::open() const {
     uint32_t queue_family_count;
     vkGetPhysicalDeviceQueueFamilyProperties(adapter, &queue_family_count, nullptr);
     std::vector<VkQueueFamilyProperties> queue_families(queue_family_count);
@@ -182,7 +181,7 @@ std::expected<std::pair<Device, Queue>, VkResult> Adapter::open() const {
 
     Device device{};
     if (const auto res = vkCreateDevice(adapter, &device_create_info, nullptr, &device.device); res != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
     device.adapter = adapter;
     device.instance = instance;
@@ -192,37 +191,109 @@ std::expected<std::pair<Device, Queue>, VkResult> Adapter::open() const {
     vkGetDeviceQueue(device.device, graphics_family, 0, &queue.queue);
     queue.family_index = graphics_family;
 
-    return std::make_pair(std::move(device), queue);
+    return Ok(std::make_pair(std::move(device), queue));
 }
 
-std::expected<void, VkResult> CommandEncoder::begin_encoding() {
+Result<void, VkResult> CommandEncoder::begin_encoding() {
     VkCommandBuffer buffer;
     if (free.empty()) {
         VkCommandBufferAllocateInfo alloc_info{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
         alloc_info.commandPool = pool;
         alloc_info.commandBufferCount = 1;
         if (const auto res = vkAllocateCommandBuffers(device, &alloc_info, &buffer); res != VK_SUCCESS) {
-            return std::unexpected(res);
+            return Err(res);
         }
     }
     else {
         buffer = free.front();
         free.pop_front();
         if (const auto res = vkResetCommandBuffer(buffer, 0); res != VK_SUCCESS) {
-            return std::unexpected(res);
+            return Err(res);
         }
     }
 
     VkCommandBufferBeginInfo begin_info{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (const auto res = vkBeginCommandBuffer(buffer, &begin_info); res != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
     vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bindless_pipeline_layout, 0, 1,
                             &bindless_buffer_set, 0, nullptr);
 
     active = buffer;
-    return {};
+    return Ok();
+}
+
+Result<void, VkResult> Surface::configure(const Device& device, const Queue& queue, const SurfaceConfiguration& config) {
+    const auto res = device.create_swapchain(surface, queue.family_index, config);
+    if (res.is_err()) {
+        return Err(res.unwrap_err());
+    }
+    swapchain = res.unwrap();
+
+    return Ok();
+}
+
+Result<SurfaceTexture, VkResult> Surface::acquire_texture(const Semaphore& semaphore) const {
+    uint32_t image_index;
+    if (const auto res = vkAcquireNextImageKHR(swapchain.device, swapchain.swapchain, UINT64_MAX, semaphore.semaphore, VK_NULL_HANDLE, &image_index); res != VK_SUCCESS) {
+        return Err(res);
+    }
+
+    return Ok(swapchain.swapchain_images[image_index]);
+}
+
+Result<void, VkResult> Queue::submit(std::span<CommandBuffer> command_buffers, const std::span<Semaphore> wait_semaphores, const std::span<Semaphore> signal_semaphores, const Fence& fence) const {
+    std::vector<VkSemaphoreSubmitInfo> wait_infos{};
+    std::vector<VkSemaphoreSubmitInfo> signal_infos{};
+    std::vector<VkCommandBufferSubmitInfo> buffer_infos{};
+    for (const auto semaphore: wait_semaphores) {
+        VkSemaphoreSubmitInfo submit_info { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+        submit_info.semaphore = semaphore.semaphore;
+        submit_info.value = 0;
+        submit_info.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        wait_infos.push_back(submit_info);
+    }
+    for (const auto semaphore: signal_semaphores) {
+        VkSemaphoreSubmitInfo submit_info { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+        submit_info.semaphore = semaphore.semaphore;
+        submit_info.value = 0;
+        submit_info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        signal_infos.push_back(submit_info);
+    }
+    for (const auto command_buffer: command_buffers) {
+        VkCommandBufferSubmitInfo submit_info { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+        submit_info.commandBuffer = command_buffer.buffer;
+        buffer_infos.push_back(submit_info);
+    }
+
+    VkSubmitInfo2 submit_info { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+    submit_info.waitSemaphoreInfoCount = wait_infos.size();
+    submit_info.pWaitSemaphoreInfos = wait_infos.data();
+    submit_info.signalSemaphoreInfoCount = signal_infos.size();
+    submit_info.pSignalSemaphoreInfos = signal_infos.data();
+    submit_info.commandBufferInfoCount = buffer_infos.size();
+    submit_info.pCommandBufferInfos = buffer_infos.data();
+    if (const auto res = vkQueueSubmit2(queue, 1, &submit_info, fence.fence); res != VK_SUCCESS) {
+        return Err(res);
+    }
+    return Ok();
+}
+
+Result<void, VkResult> Queue::present(const Surface& surface, const SurfaceTexture& surface_texture, std::span<Semaphore> wait_semaphores) const {
+    std::vector<VkSemaphore> semaphore_views{};
+    std::ranges::transform(wait_semaphores, std::back_inserter(semaphore_views), [](auto semaphore) { return semaphore.semaphore; });
+    VkPresentInfoKHR present_info { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+    present_info.waitSemaphoreCount = semaphore_views.size();
+    present_info.pWaitSemaphores = semaphore_views.data();
+    present_info.swapchainCount = 1;
+    present_info.pSwapchains = &surface.swapchain.swapchain;
+    present_info.pImageIndices = &surface_texture.swapchain_index;
+
+    if (const auto res = vkQueuePresentKHR(queue, &present_info); res != VK_SUCCESS) {
+        return Err(res);
+    }
+    return Ok();
 }
 
 void CommandEncoder::begin_render_pass(const RenderPassDescriptor& descriptor) const {
@@ -342,13 +413,13 @@ void CommandEncoder::end_render_pass() const {
     vkCmdEndRendering(active);
 }
 
-std::expected<CommandBuffer, VkResult> CommandEncoder::end_encoding() {
+Result<CommandBuffer, VkResult> CommandEncoder::end_encoding() {
     if (const auto res = vkEndCommandBuffer(active); res != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
     const VkCommandBuffer buffer = active;
     active = VK_NULL_HANDLE;
-    return CommandBuffer{buffer};
+    return Ok(CommandBuffer{buffer});
 }
 
 void CommandEncoder::reset_all(const std::span<CommandBuffer>& command_buffers) {
@@ -358,20 +429,20 @@ void CommandEncoder::reset_all(const std::span<CommandBuffer>& command_buffers) 
     vkResetCommandPool(device, pool, 0);
 }
 
-std::expected<void, VkResult> DescriptorHeap::initialize(VkDevice device, VkDescriptorPool pool,
+Result<void, VkResult> DescriptorHeap::initialize(VkDevice device, VkDescriptorPool pool,
                                                          VkDescriptorSetLayout set_layout, size_t capacity_) {
     VkDescriptorSetAllocateInfo alloc_info{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     alloc_info.descriptorPool = pool;
     alloc_info.descriptorSetCount = 1;
     alloc_info.pSetLayouts = &set_layout;
     if (const auto res = vkAllocateDescriptorSets(device, &alloc_info, &set); res != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
 
     capacity = capacity_;
     len = 0;
 
-    return {};
+    return Ok();
 }
 
 size_t DescriptorHeap::allocate() {
@@ -393,17 +464,17 @@ void DescriptorHeap::free(const size_t index) {
     freelist.push_back(index);
 }
 
-std::expected<void, VkResult> Device::initialize() {
+Result<void, VkResult> Device::initialize() {
     const VmaAllocatorCreateInfo allocator_create_info{
         .physicalDevice = adapter,
         .device = device,
         .instance = instance,
     };
     if (const auto res = vmaCreateAllocator(&allocator_create_info, &allocator); res != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
 
-    shader_compiler.initialize().value();
+    shader_compiler.initialize().unwrap();
 
     // Create bindless descriptor set layout
     VkDescriptorBindingFlags flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
@@ -427,7 +498,7 @@ std::expected<void, VkResult> Device::initialize() {
     buffer_set_layout_create_info.pBindings = &buffer_binding;
     if (const auto res = vkCreateDescriptorSetLayout(device, &buffer_set_layout_create_info, nullptr,
                                                      &buffer_set_layout); res != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
 
     // Create bindless pipeline layout
@@ -443,7 +514,7 @@ std::expected<void, VkResult> Device::initialize() {
     layout_create_info.pPushConstantRanges = &push_constant;
     if (const auto res = vkCreatePipelineLayout(device, &layout_create_info, nullptr, &bindless_pipeline_layout); res !=
         VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
 
     // Create bindless descriptor pool
@@ -458,12 +529,12 @@ std::expected<void, VkResult> Device::initialize() {
     pool_create_info.pPoolSizes = &buffer_pool_size;
     if (const auto res = vkCreateDescriptorPool(device, &pool_create_info, nullptr, &bindless_descriptor_pool); res !=
         VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
 
     buffer_heap.initialize(device, bindless_descriptor_pool, buffer_set_layout, 1000);
 
-    return {};
+    return Ok();
 }
 
 void Device::destroy() {
@@ -475,15 +546,15 @@ void Device::destroy() {
     device = nullptr;
 }
 
-std::expected<void, VkResult> Device::wait_for_fence(const Fence& fence) const {
+Result<void, VkResult> Device::wait_for_fence(const Fence& fence) const {
     if (const auto res = vkWaitForFences(device, 1, &fence.fence, VK_TRUE, UINT64_MAX); res != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
     if (const auto res = vkResetFences(device, 1, &fence.fence); res != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
 
-    return {};
+    return Ok();
 }
 
 size_t Device::add_binding(const Buffer& buffer) {
@@ -515,7 +586,7 @@ void Device::unmap_buffer(const Buffer& buffer) const {
     vmaUnmapMemory(allocator, buffer.allocation);
 }
 
-std::expected<Swapchain, VkResult> Device::create_swapchain(VkSurfaceKHR surface, uint32_t queue_family,
+Result<Swapchain, VkResult> Device::create_swapchain(VkSurfaceKHR surface, uint32_t queue_family,
                                                             const SurfaceConfiguration& config) const {
     Swapchain swapchain{};
     swapchain.device = device;
@@ -538,7 +609,7 @@ std::expected<Swapchain, VkResult> Device::create_swapchain(VkSurfaceKHR surface
     swapchain_create_info.clipped = true;
     if (const auto res = vkCreateSwapchainKHR(device, &swapchain_create_info, nullptr, &swapchain.swapchain); res !=
         VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
 
     uint32_t image_count;
@@ -563,7 +634,7 @@ std::expected<Swapchain, VkResult> Device::create_swapchain(VkSurfaceKHR surface
         view_info.subresourceRange.layerCount = 1;
         VkImageView view;
         if (const auto res = vkCreateImageView(device, &view_info, nullptr, &view); res != VK_SUCCESS) {
-            return std::unexpected(res);
+            return Err(res);
         }
 
         swapchain.swapchain_images[i] = SurfaceTexture{
@@ -571,7 +642,7 @@ std::expected<Swapchain, VkResult> Device::create_swapchain(VkSurfaceKHR surface
         };
     }
 
-    return swapchain;
+    return Ok(swapchain);
 }
 
 void Device::destroy_swapchain(const Swapchain& swapchain) const {
@@ -581,7 +652,7 @@ void Device::destroy_swapchain(const Swapchain& swapchain) const {
     vkDestroySwapchainKHR(device, swapchain.swapchain, nullptr);
 }
 
-std::expected<CommandEncoder, VkResult>
+Result<CommandEncoder, VkResult>
 Device::create_command_encoder(const CommandEncoderDescriptor& descriptor) const {
     CommandEncoder encoder{};
     encoder.device = device;
@@ -592,10 +663,10 @@ Device::create_command_encoder(const CommandEncoderDescriptor& descriptor) const
     create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     create_info.queueFamilyIndex = descriptor.queue->family_index;
     if (const auto res = vkCreateCommandPool(device, &create_info, nullptr, &encoder.pool); res != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
 
-    return encoder;
+    return Ok(encoder);
 }
 
 void Device::destroy_command_encoder(const CommandEncoder& encoder) const {
@@ -603,38 +674,38 @@ void Device::destroy_command_encoder(const CommandEncoder& encoder) const {
     vkDestroyCommandPool(device, encoder.pool, nullptr);
 }
 
-std::expected<Fence, VkResult> Device::create_fence(const bool signaled) const {
+Result<Fence, VkResult> Device::create_fence(const bool signaled) const {
     VkFenceCreateInfo create_info{.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     create_info.flags = signaled ? VK_FENCE_CREATE_SIGNALED_BIT : 0;
 
     Fence fence{};
     if (const auto res = vkCreateFence(device, &create_info, nullptr, &fence.fence); res != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
 
-    return fence;
+    return Ok(fence);
 }
 
 void Device::destroy_fence(const Fence& fence) const {
     vkDestroyFence(device, fence.fence, nullptr);
 }
 
-std::expected<Semaphore, VkResult> Device::create_semaphore() const {
+Result<Semaphore, VkResult> Device::create_semaphore() const {
     VkSemaphoreCreateInfo create_info{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 
     Semaphore semaphore{};
     if (const auto res = vkCreateSemaphore(device, &create_info, nullptr, &semaphore.semaphore); res != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
 
-    return semaphore;
+    return Ok(semaphore);
 }
 
 void Device::destroy_semaphore(const Semaphore& semaphore) const {
     vkDestroySemaphore(device, semaphore.semaphore, nullptr);
 }
 
-std::expected<Buffer, VkResult> Device::create_buffer(const BufferDescriptor& descriptor) const {
+Result<Buffer, VkResult> Device::create_buffer(const BufferDescriptor& descriptor) const {
     VkBufferCreateInfo create_info{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     create_info.size = descriptor.size;
     create_info.usage = map_buffer_usage(descriptor.usage);
@@ -651,17 +722,17 @@ std::expected<Buffer, VkResult> Device::create_buffer(const BufferDescriptor& de
     buffer.size = descriptor.size;
     if (const auto res = vmaCreateBuffer(allocator, &create_info, &alloc_info, &buffer.buffer, &buffer.allocation,
                                          nullptr); res != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
 
-    return buffer;
+    return Ok(buffer);
 }
 
 void Device::destroy_buffer(const Buffer& buffer) const {
     vmaDestroyBuffer(allocator, buffer.buffer, buffer.allocation);
 }
 
-std::expected<Pipeline, VkResult> Device::create_graphics_pipeline(const PipelineDescriptor& descriptor) const {
+Result<Pipeline, VkResult> Device::create_graphics_pipeline(const PipelineDescriptor& descriptor) const {
     VkPipelineShaderStageCreateInfo vertex_stage{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
     vertex_stage.stage = VK_SHADER_STAGE_VERTEX_BIT;
     vertex_stage.module = descriptor.vertex_shader->module;
@@ -766,17 +837,17 @@ std::expected<Pipeline, VkResult> Device::create_graphics_pipeline(const Pipelin
     pipeline.bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
     if (const auto res = vkCreateGraphicsPipelines(device, nullptr, 1, &create_info, nullptr, &pipeline.pipeline); res
         != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
 
-    return pipeline;
+    return Ok(pipeline);
 }
 
 void Device::destroy_pipeline(const Pipeline& pipeline) const {
     vkDestroyPipeline(device, pipeline.pipeline, nullptr);
 }
 
-std::expected<ShaderModule, VkResult> Device::create_shader_module(const ShaderModuleDescriptor& descriptor) const {
+Result<ShaderModule, VkResult> Device::create_shader_module(const ShaderModuleDescriptor& descriptor) const {
     std::string target;
     switch (descriptor.stage) {
     case ShaderStage::Vertex:
@@ -797,17 +868,17 @@ std::expected<ShaderModule, VkResult> Device::create_shader_module(const ShaderM
     ShaderModule module;
     module.entrypoint = descriptor.entrypoint;
     if (const auto res = vkCreateShaderModule(device, &create_info, nullptr, &module.module); res != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
 
-    return module;
+    return Ok(module);
 }
 
 void Device::destroy_shader_module(const ShaderModule& module) const {
     vkDestroyShaderModule(device, module.module, nullptr);
 }
 
-std::expected<Texture, VkResult> Device::create_texture(const TextureDescriptor& descriptor) const {
+Result<Texture, VkResult> Device::create_texture(const TextureDescriptor& descriptor) const {
     VkImageCreateInfo create_info{.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     create_info.imageType = map_image_type(descriptor.dimension);
     create_info.format = map_texture_format(descriptor.format);
@@ -829,17 +900,17 @@ std::expected<Texture, VkResult> Device::create_texture(const TextureDescriptor&
     texture.format = descriptor.format;
     if (const auto res = vmaCreateImage(allocator, &create_info, &alloc_info, &texture.texture, &texture.allocation,
                                         nullptr); res != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
 
-    return texture;
+    return Ok(texture);
 }
 
 void Device::destroy_texture(const Texture& texture) const {
     vmaDestroyImage(allocator, texture.texture, texture.allocation);
 }
 
-std::expected<TextureView, VkResult> Device::create_texture_view(const Texture& texture,
+Result<TextureView, VkResult> Device::create_texture_view(const Texture& texture,
                                                                  const TextureViewDescriptor& descriptor) const {
     VkImageViewCreateInfo create_info{.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     create_info.image = texture.texture;
@@ -857,10 +928,10 @@ std::expected<TextureView, VkResult> Device::create_texture_view(const Texture& 
 
     TextureView view;
     if (const auto res = vkCreateImageView(device, &create_info, nullptr, &view.view); res != VK_SUCCESS) {
-        return std::unexpected(res);
+        return Err(res);
     }
 
-    return view;
+    return Ok(view);
 }
 
 void Device::destroy_texture_view(const TextureView& view) const {

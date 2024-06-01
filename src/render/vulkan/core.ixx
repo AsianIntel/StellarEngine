@@ -4,7 +4,7 @@ module;
 #include <deque>
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vulkan/vulkan.hpp>
-#include <expected>
+#include <optional>
 #include <ranges>
 #include <vk_mem_alloc.h>
 
@@ -12,6 +12,8 @@ export module stellar.render.vulkan;
 
 import stellar.render.types;
 import stellar.render.vulkan.shader;
+import stellar.core.result;
+import stellar.core;
 
 export struct Adapter;
 export struct Device;
@@ -115,11 +117,11 @@ export struct Instance {
     VkInstance instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
 
-    std::expected<void, VkResult> initialize(const InstanceDescriptor& descriptor);
+    Result<void, VkResult> initialize(const InstanceDescriptor& descriptor);
     void destroy();
     
-    std::expected<std::vector<Adapter>, VkResult> enumerate_adapters() const;
-    std::expected<Surface, VkResult> create_surface(HWND hwnd, HINSTANCE hinstance) const;
+    Result<std::vector<Adapter>, VkResult> enumerate_adapters() const;
+    Result<Surface, VkResult> create_surface(HWND hwnd, HINSTANCE hinstance) const;
     void destroy_surface(const Surface& surface) const;
 };
 
@@ -128,7 +130,7 @@ struct Adapter {
     VkInstance instance{};
     AdapterInfo info{};
 
-    std::expected<std::pair<Device, Queue>, VkResult> open() const;
+    Result<std::pair<Device, Queue>, VkResult> open() const;
 };
 
 export struct DescriptorHeap {
@@ -137,7 +139,7 @@ export struct DescriptorHeap {
     size_t len{};
     std::deque<size_t> freelist{};
 
-    std::expected<void, VkResult> initialize(VkDevice device, VkDescriptorPool pool, VkDescriptorSetLayout set_layout, size_t capacity);
+    Result<void, VkResult> initialize(VkDevice device, VkDescriptorPool pool, VkDescriptorSetLayout set_layout, size_t capacity);
     
     size_t allocate();
     void free(size_t index);
@@ -161,31 +163,31 @@ struct Device {
     Device(Device&&) = default;
     Device& operator=(Device&&) = default;
     
-    std::expected<void, VkResult> initialize();
+    Result<void, VkResult> initialize();
     void destroy();
 
-    std::expected<void, VkResult> wait_for_fence(const Fence& fence) const;
+    Result<void, VkResult> wait_for_fence(const Fence& fence) const;
     size_t add_binding(const Buffer& buffer);
     void* map_buffer(const Buffer& buffer) const;
     void unmap_buffer(const Buffer& buffer) const;
 
-    std::expected<Swapchain, VkResult> create_swapchain(VkSurfaceKHR surface, uint32_t queue_family, const SurfaceConfiguration& config) const;
+    Result<Swapchain, VkResult> create_swapchain(VkSurfaceKHR surface, uint32_t queue_family, const SurfaceConfiguration& config) const;
     void destroy_swapchain(const Swapchain& swapchain) const;
-    std::expected<CommandEncoder, VkResult> create_command_encoder(const CommandEncoderDescriptor& descriptor) const;
+    Result<CommandEncoder, VkResult> create_command_encoder(const CommandEncoderDescriptor& descriptor) const;
     void destroy_command_encoder(const CommandEncoder& encoder) const;
-    std::expected<Fence, VkResult> create_fence(bool signaled) const;
+    Result<Fence, VkResult> create_fence(bool signaled) const;
     void destroy_fence(const Fence& fence) const;
-    std::expected<Semaphore, VkResult> create_semaphore() const;
+    Result<Semaphore, VkResult> create_semaphore() const;
     void destroy_semaphore(const Semaphore& semaphore) const;
-    std::expected<Buffer, VkResult> create_buffer(const BufferDescriptor& descriptor) const;
+    Result<Buffer, VkResult> create_buffer(const BufferDescriptor& descriptor) const;
     void destroy_buffer(const Buffer& buffer) const;
-    std::expected<Pipeline, VkResult> create_graphics_pipeline(const PipelineDescriptor& descriptor) const;
+    Result<Pipeline, VkResult> create_graphics_pipeline(const PipelineDescriptor& descriptor) const;
     void destroy_pipeline(const Pipeline& pipeline) const;
-    std::expected<ShaderModule, VkResult> create_shader_module(const ShaderModuleDescriptor& descriptor) const;
+    Result<ShaderModule, VkResult> create_shader_module(const ShaderModuleDescriptor& descriptor) const;
     void destroy_shader_module(const ShaderModule& module) const;
-    std::expected<Texture, VkResult> create_texture(const TextureDescriptor& descriptor) const;
+    Result<Texture, VkResult> create_texture(const TextureDescriptor& descriptor) const;
     void destroy_texture(const Texture& texture) const;
-    std::expected<TextureView, VkResult> create_texture_view(const Texture& texture, const TextureViewDescriptor& descriptor) const;
+    Result<TextureView, VkResult> create_texture_view(const Texture& texture, const TextureViewDescriptor& descriptor) const;
     void destroy_texture_view(const TextureView& view) const;
 };
 
@@ -193,8 +195,8 @@ struct Queue {
     VkQueue queue;
     uint32_t family_index;
 
-    std::expected<void, VkResult> submit(std::span<CommandBuffer> command_buffers, std::span<Semaphore> wait_semaphores, std::span<Semaphore> signal_semaphores, const Fence& fence) const;
-    std::expected<void, VkResult> present(const Surface& surface, const SurfaceTexture& surface_texture, std::span<Semaphore> wait_semaphores) const;
+    Result<void, VkResult> submit(std::span<CommandBuffer> command_buffers, std::span<Semaphore> wait_semaphores, std::span<Semaphore> signal_semaphores, const Fence& fence) const;
+    Result<void, VkResult> present(const Surface& surface, const SurfaceTexture& surface_texture, std::span<Semaphore> wait_semaphores) const;
 };
 
 struct Semaphore {
@@ -215,8 +217,8 @@ struct Surface {
     VkSurfaceKHR surface{};
     Swapchain swapchain{};
 
-    std::expected<void, VkResult> configure(const Device& device, const Queue& queue, const SurfaceConfiguration& config);
-    std::expected<SurfaceTexture, VkResult> acquire_texture(const Semaphore& semaphore) const;
+    Result<void, VkResult> configure(const Device& device, const Queue& queue, const SurfaceConfiguration& config);
+    Result<SurfaceTexture, VkResult> acquire_texture(const Semaphore& semaphore) const;
 };
 
 struct CommandEncoder {
@@ -228,7 +230,7 @@ struct CommandEncoder {
     VkDescriptorSet bindless_buffer_set{};
     VkPipelineLayout bindless_pipeline_layout{};
 
-    std::expected<void, VkResult> begin_encoding();
+    Result<void, VkResult> begin_encoding();
     void begin_render_pass(const RenderPassDescriptor& descriptor) const;
     void transition_textures(const std::span<TextureBarrier>& barriers) const;
     void bind_pipeline(const Pipeline& pipeline) const;
@@ -237,7 +239,7 @@ struct CommandEncoder {
     void draw(uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance) const;
     void draw_indexed(uint32_t index_count, uint32_t instance_count, uint32_t first_index, uint32_t vertex_offset, uint32_t first_instance) const;
     void end_render_pass() const;
-    std::expected<CommandBuffer, VkResult> end_encoding();
+    Result<CommandBuffer, VkResult> end_encoding();
     void reset_all(const std::span<CommandBuffer>& command_buffers);
 };
 
@@ -277,78 +279,6 @@ struct Pipeline {
     VkPipelineBindPoint bind_point{};
 };
 
-std::expected<void, VkResult> Surface::configure(const Device& device, const Queue& queue, const SurfaceConfiguration& config) {
-    const auto res = device.create_swapchain(surface, queue.family_index, config);
-    if (!res.has_value()) {
-        return std::unexpected(res.error());
-    }
-    swapchain = res.value();
-
-    return {};
-}
-
-std::expected<SurfaceTexture, VkResult> Surface::acquire_texture(const Semaphore& semaphore) const {
-    uint32_t image_index;
-    if (const auto res = vkAcquireNextImageKHR(swapchain.device, swapchain.swapchain, UINT64_MAX, semaphore.semaphore, VK_NULL_HANDLE, &image_index); res != VK_SUCCESS) {
-        return std::unexpected(res);
-    }
-
-    return swapchain.swapchain_images[image_index];
-}
-
-std::expected<void, VkResult> Queue::submit(std::span<CommandBuffer> command_buffers, const std::span<Semaphore> wait_semaphores, const std::span<Semaphore> signal_semaphores, const Fence& fence) const {
-    std::vector<VkSemaphoreSubmitInfo> wait_infos{};
-    std::vector<VkSemaphoreSubmitInfo> signal_infos{};
-    std::vector<VkCommandBufferSubmitInfo> buffer_infos{};
-    for (const auto semaphore: wait_semaphores) {
-        VkSemaphoreSubmitInfo submit_info { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
-        submit_info.semaphore = semaphore.semaphore;
-        submit_info.value = 0;
-        submit_info.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-        wait_infos.push_back(submit_info);
-    }
-    for (const auto semaphore: signal_semaphores) {
-        VkSemaphoreSubmitInfo submit_info { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
-        submit_info.semaphore = semaphore.semaphore;
-        submit_info.value = 0;
-        submit_info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-        signal_infos.push_back(submit_info);
-    }
-    for (const auto command_buffer: command_buffers) {
-        VkCommandBufferSubmitInfo submit_info { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
-        submit_info.commandBuffer = command_buffer.buffer;
-        buffer_infos.push_back(submit_info);
-    }
-
-    VkSubmitInfo2 submit_info { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
-    submit_info.waitSemaphoreInfoCount = wait_infos.size();
-    submit_info.pWaitSemaphoreInfos = wait_infos.data();
-    submit_info.signalSemaphoreInfoCount = signal_infos.size();
-    submit_info.pSignalSemaphoreInfos = signal_infos.data();
-    submit_info.commandBufferInfoCount = buffer_infos.size();
-    submit_info.pCommandBufferInfos = buffer_infos.data();
-    if (const auto res = vkQueueSubmit2(queue, 1, &submit_info, fence.fence); res != VK_SUCCESS) {
-        return std::unexpected(res);
-    }
-    return {};
-}
-
-std::expected<void, VkResult> Queue::present(const Surface& surface, const SurfaceTexture& surface_texture, std::span<Semaphore> wait_semaphores) const {
-    std::vector<VkSemaphore> semaphore_views{};
-    std::ranges::transform(wait_semaphores, std::back_inserter(semaphore_views), [](auto semaphore) { return semaphore.semaphore; });
-    VkPresentInfoKHR present_info { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
-    present_info.waitSemaphoreCount = semaphore_views.size();
-    present_info.pWaitSemaphores = semaphore_views.data();
-    present_info.swapchainCount = 1;
-    present_info.pSwapchains = &surface.swapchain.swapchain;
-    present_info.pImageIndices = &surface_texture.swapchain_index;
-
-    if (const auto res = vkQueuePresentKHR(queue, &present_info); res != VK_SUCCESS) {
-        return std::unexpected(res);
-    }
-    return {};
-}
-
 constexpr VkFormat map_texture_format(const TextureFormat format) {
     switch (format) {
     case TextureFormat::Rgba8Unorm:
@@ -356,7 +286,7 @@ constexpr VkFormat map_texture_format(const TextureFormat format) {
     case TextureFormat::D32:
         return VK_FORMAT_D32_SFLOAT;
     default:
-        std::unreachable();        
+        unreachable();
     }
 }
 
@@ -371,7 +301,7 @@ constexpr VkCompositeAlphaFlagBitsKHR map_composite_alpha(const CompositeAlphaMo
     case CompositeAlphaMode::Inherit:
         return VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
     default:
-        std::unreachable();
+        unreachable();
     }
 }
 
@@ -386,7 +316,7 @@ constexpr VkPresentModeKHR map_present_mode(const PresentMode mode) {
     case PresentMode::Mailbox:
         return VK_PRESENT_MODE_MAILBOX_KHR;
     default:
-        std::unreachable();
+        unreachable();
     }
 }
 
@@ -407,7 +337,7 @@ constexpr VkImageLayout map_texture_layout(const TextureUsage usage) {
     case TextureUsage::DepthWrite:
         return VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     default:
-        std::unreachable();        
+        unreachable();
     }
 }
 
@@ -418,7 +348,7 @@ constexpr VkImageAspectFlagBits map_format_aspect(const FormatAspect aspect) {
     case FormatAspect::Depth:
         return VK_IMAGE_ASPECT_DEPTH_BIT;
     default:
-        std::unreachable();
+        unreachable();
     }
 }
 
@@ -449,7 +379,7 @@ constexpr VkImageType map_image_type(const TextureDimension dimension) {
     case TextureDimension::D3:
         return VK_IMAGE_TYPE_3D;
     default:
-        std::unreachable();
+        unreachable();
     }
 }
 
@@ -462,7 +392,7 @@ constexpr VkImageViewType map_image_view_type(const TextureDimension dimension) 
     case TextureDimension::D3:
         return VK_IMAGE_VIEW_TYPE_3D;
     default:
-        std::unreachable();
+        unreachable();
     }
 }
 
@@ -505,6 +435,6 @@ constexpr VkCompareOp map_compare_function(const CompareFunction function) {
     case CompareFunction::Always:
         return VK_COMPARE_OP_ALWAYS;
     default:
-        std::unreachable();
+        unreachable();
     }
 }

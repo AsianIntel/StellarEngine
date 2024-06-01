@@ -7,6 +7,8 @@ module;
 #include <glm/gtx/compatibility.hpp>
 #include "ecs/ecs.hpp"
 
+#pragma warning(disable : 4244)
+
 export module stellar.animation;
 
 import stellar.scene.transform;

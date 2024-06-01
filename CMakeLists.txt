@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.26)
 project(StellarEngine)
 
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 20)
 
 include(FetchContent)
 
@@ -43,6 +43,8 @@ target_sources(StellarEngine PUBLIC
     "src/render/vulkan/core.cpp"
 )
 target_sources(StellarEngine PUBLIC FILE_SET all_modules TYPE CXX_MODULES FILES
+	"src/core/core.ixx"
+    "src/core/result.ixx"
     "src/render/primitives.ixx"
     "src/render/vulkan/core.ixx"
     "src/render/vulkan/types.ixx"

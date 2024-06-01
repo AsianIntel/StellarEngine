@@ -5,10 +5,11 @@ module;
 #define NOMINMAX
 #include <Windows.h>
 #include <cstdint>
-#include <expected>
 #include <string>
 
 export module stellar.window;
+
+import stellar.core.result;
 
 LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -24,7 +25,7 @@ export struct Window {
     Window(Window&&) = default;
     Window& operator=(Window&&) = default;
 
-    std::expected<void, std::string> initialize(uint32_t width_, uint32_t height_) {
+    Result<void, std::string> initialize(uint32_t width_, uint32_t height_) {
         width = width_;
         height = height_;
 
@@ -56,11 +57,11 @@ export struct Window {
             this
         );
         if (hwnd == nullptr) {
-            return std::unexpected("Failed to create window");
+            return Err(std::string("Failed to create window"));
         }
 
         ShowWindow(hwnd, SW_SHOW);
-        return {};
+        return Ok();
     }
 };
 
@@ -76,9 +77,9 @@ void poll_window(flecs::iter& it) {
     }
 }
 
-export std::expected<void, std::string> initialize_window(const flecs::world& world, const uint32_t width, const uint32_t height) {
+export Result<void, std::string> initialize_window(const flecs::world& world, const uint32_t width, const uint32_t height) {
     Window window{};
-    if (const auto res = window.initialize(width, height); !res.has_value()) {
+    if (const auto res = window.initialize(width, height); res.is_err()) {
         return res;
     }
 
@@ -88,7 +89,7 @@ export std::expected<void, std::string> initialize_window(const flecs::world& wo
         .kind(flecs::PreUpdate)
         .run(poll_window);
 
-    return {};
+    return Ok();
 }
 
 LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {

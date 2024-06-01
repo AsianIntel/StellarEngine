@@ -2,11 +2,12 @@ module;
 
 #include <wrl/client.h>
 #include <dxcapi.h>
-#include <expected>
 #include <iostream>
 #include <vector>
 
 export module stellar.render.vulkan.shader;
+
+import stellar.core.result;
 
 template<typename T>
 using ComPtr = Microsoft::WRL::ComPtr<T>;
@@ -27,17 +28,17 @@ export struct ShaderCompiler {
     ComPtr<IDxcUtils> utils{};
     ComPtr<IDxcCompiler3> compiler{};
 
-    std::expected<void, HRESULT> initialize() {
+    Result<void, HRESULT> initialize() {
         if (const auto res = DxcCreateInstance(GUID_DxcLibrary, IID_PPV_ARGS(&utils)); FAILED(res)) {
-            return std::unexpected(res);
+            return Err(res);
         }
         if (const auto res = DxcCreateInstance(GUID_DxcCompiler, IID_PPV_ARGS(&compiler)); FAILED(res)) {
-            return std::unexpected(res);
+            return Err(res);
         }
-        return {};
+        return Ok();
     }
 
-    std::vector<uint8_t> compile(std::string_view source, std::string_view entrypoint, std::string_view target) const {
+    [[nodiscard]] std::vector<uint8_t> compile(std::string_view source, std::string_view entrypoint, std::string_view target) const {
         ComPtr<IDxcBlobEncoding> source_blob;
         utils->CreateBlob(source.data(), source.size(), CP_UTF8, source_blob.GetAddressOf());
 
@@ -64,7 +65,7 @@ export struct ShaderCompiler {
         ComPtr<IDxcBlobUtf8> errors;
         compile_result->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&errors), nullptr);
         if (errors && errors->GetStringLength() > 0) {
-            std::cout << reinterpret_cast<char*>(errors->GetBufferPointer());
+            std::cout << static_cast<char*>(errors->GetBufferPointer());
             __debugbreak();
         }
 

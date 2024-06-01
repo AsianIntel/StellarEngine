@@ -3,13 +3,15 @@ module;
 #include "ecs/ecs.hpp"
 #include <array>
 #include <vulkan/vulkan.hpp>
-#include <expected>
+#include <optional>
 #include <fstream>
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/mat4x4.hpp>
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
+
+#pragma warning(disable: 4267)
 
 export module stellar.render.vulkan.plugin;
 
@@ -18,6 +20,7 @@ import stellar.render.types;
 import stellar.render.primitives;
 import stellar.window;
 import stellar.scene.transform;
+import stellar.core.result;
 
 std::string read_file(const std::string& filename);
 
@@ -88,8 +91,8 @@ void render(flecs::iter& it) {
     if (!it.next()) return;
     auto context = it.field<RenderContext>(0);
     
-    SurfaceTexture surface_texture = context->surface.acquire_texture(context->swapchain_semaphore).value();
-    context->encoder.begin_encoding().value();
+    SurfaceTexture surface_texture = context->surface.acquire_texture(context->swapchain_semaphore).unwrap();
+    context->encoder.begin_encoding().unwrap();
 
     {
         std::array barriers {
@@ -177,16 +180,16 @@ void render(flecs::iter& it) {
         context->encoder.transition_textures(barriers);
     }
     
-    auto command_buffer = context->encoder.end_encoding().value();
+    auto command_buffer = context->encoder.end_encoding().unwrap();
 
     std::array wait_semaphores { context->swapchain_semaphore };
     std::array signal_semaphores { context->render_semaphore };
     std::array command_buffers { command_buffer };
-    context->queue.submit(command_buffers, wait_semaphores, signal_semaphores, context->render_fence).value();
+    context->queue.submit(command_buffers, wait_semaphores, signal_semaphores, context->render_fence).unwrap();
 
     // TODO: Check for window closure
     auto _ = context->queue.present(context->surface, surface_texture, signal_semaphores);
-    context->device.wait_for_fence(context->render_fence).value();
+    context->device.wait_for_fence(context->render_fence).unwrap();
     context->encoder.reset_all(command_buffers);
 }
 
@@ -219,7 +222,7 @@ void prepare_meshes(flecs::iter& it) {
     context->vertex_buffer = context->device.create_buffer(BufferDescriptor {
         .size = all_vertices.size() * sizeof(Vertex),
         .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
-    }).value();
+    }).unwrap();
     {
         void* data = context->device.map_buffer(context->vertex_buffer);
         memcpy(data, all_vertices.data(), all_vertices.size() * sizeof(Vertex));
@@ -230,7 +233,7 @@ void prepare_meshes(flecs::iter& it) {
     context->index_buffer = context->device.create_buffer(BufferDescriptor {
         .size = all_indices.size() * sizeof(uint32_t),
         .usage = BufferUsage::Index | BufferUsage::MapReadWrite
-    }).value();
+    }).unwrap();
     {
         void* data = context->device.map_buffer(context->index_buffer);
         memcpy(data, all_indices.data(), all_indices.size() * sizeof(uint32_t));
@@ -255,7 +258,7 @@ void prepare_materials(flecs::iter& it) {
     context->material_buffer = context->device.create_buffer(BufferDescriptor {
         .size = all_materials.size() * sizeof(Material),
         .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
-    }).value();
+    }).unwrap();
     {
         void* data = context->device.map_buffer(context->material_buffer);
         memcpy(data, all_materials.data(), all_materials.size() * sizeof(Material));
@@ -282,7 +285,7 @@ void prepare_transforms(flecs::iter& it) {
         context->transform_buffer = context->device.create_buffer(BufferDescriptor {
             .size = all_transforms.size() * sizeof(GlobalTransform),
             .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
-        }).value();
+        }).unwrap();
         context->transform_buffer_index = context->device.add_binding(context->transform_buffer);
     }
     {
@@ -309,7 +312,7 @@ void prepare_joints(flecs::iter& it) {
         context->joint_buffer = context->device.create_buffer(BufferDescriptor {
             .size = all_joints.size() * sizeof(glm::mat4),
             .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
-        }).value();
+        }).unwrap();
         context->joint_buffer_index = context->device.add_binding(context->joint_buffer);
     }
     {
@@ -336,7 +339,7 @@ void prepare_lights(flecs::iter& it) {
     context->light_buffer = context->device.create_buffer(BufferDescriptor {
         .size = all_lights.size() * sizeof(Light),
         .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
-    }).value();
+    }).unwrap();
     {
         void* data = context->device.map_buffer(context->light_buffer);
         memcpy(data, all_lights.data(), all_lights.size() * sizeof(Light));
@@ -345,28 +348,28 @@ void prepare_lights(flecs::iter& it) {
     context->light_buffer_index = context->device.add_binding(context->light_buffer);
 }
 
-export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world) {
+export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
     Instance instance{};
     if (const auto res = instance.initialize(InstanceDescriptor{
         .validation = true,
         .gpu_based_validation = true
-    }); !res.has_value()) {
+    }); res.is_err()) {
         return res;
     }
 
-    std::vector<Adapter> adapters = instance.enumerate_adapters().value();
+    std::vector<Adapter> adapters = instance.enumerate_adapters().unwrap();
     const Adapter adapter = *std::ranges::find_if(adapters.begin(), adapters.end(), [](const auto& a) { return a.info.type == DeviceType::Gpu; });
 
-    auto open_device = adapter.open().value();
+    auto open_device = adapter.open().unwrap();
     Device device = std::get<0>(std::move(open_device));
     const Queue queue = std::get<1>(open_device);
 
     const Window* window = world.get<Window>();
     auto surface_res = instance.create_surface(window->hwnd, window->hinstance);
-    if (!surface_res.has_value()) {
-        return std::unexpected(surface_res.error());
+    if (surface_res.is_err()) {
+        return Err(surface_res.unwrap_err());
     }
-    Surface surface = surface_res.value();
+    Surface surface = surface_res.unwrap();
     SurfaceConfiguration surface_config {
         .extent = Extent3d {
             .width = window->width,
@@ -377,45 +380,45 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
         .composite_alpha = CompositeAlphaMode::Opaque,
         .format = TextureFormat::Rgba8Unorm
     };
-    if (const auto res = surface.configure(device, queue, surface_config); !res.has_value()) {
+    if (const auto res = surface.configure(device, queue, surface_config); res.is_err()) {
         return res;
     }
 
     auto command_res = device.create_command_encoder(CommandEncoderDescriptor { .queue = &queue });
-    if (!command_res.has_value()) {
-        return std::unexpected(command_res.error());
+    if (command_res.is_err()) {
+        return Err(command_res.unwrap_err());
     }
-    CommandEncoder encoder = command_res.value();
+    CommandEncoder encoder = command_res.unwrap();
 
     auto fence_res = device.create_fence(false);
-    if (!fence_res.has_value()) {
-        return std::unexpected(fence_res.error());
+    if (fence_res.is_err()) {
+        return Err(fence_res.unwrap_err());
     }
-    Fence render_fence = fence_res.value();
+    Fence render_fence = fence_res.unwrap();
 
     auto semaphore_res = device.create_semaphore();
-    if (!semaphore_res.has_value()) {
-        return std::unexpected(semaphore_res.error());
+    if (semaphore_res.is_err()) {
+        return Err(semaphore_res.unwrap_err());
     }
-    Semaphore swapchain_semaphore = semaphore_res.value();
+    Semaphore swapchain_semaphore = semaphore_res.unwrap();
 
     semaphore_res = device.create_semaphore();
-    if (!semaphore_res.has_value()) {
-        return std::unexpected(semaphore_res.error());
+    if (semaphore_res.is_err()) {
+        return Err(semaphore_res.unwrap_err());
     }
-    Semaphore render_semaphore = semaphore_res.value();
+    Semaphore render_semaphore = semaphore_res.unwrap();
 
-    auto shader_file = read_file("../../../../assets/shaders/mesh.hlsl");
+    auto shader_file = read_file("../../assets/shaders/mesh.hlsl");
     ShaderModule vertex_shader = device.create_shader_module(ShaderModuleDescriptor {
         .code = shader_file,
         .entrypoint = "VSMain",
         .stage = ShaderStage::Vertex
-    }).value();
+    }).unwrap();
     ShaderModule fragment_shader = device.create_shader_module(ShaderModuleDescriptor {
         .code = shader_file,
         .entrypoint = "PSMain",
         .stage = ShaderStage::Fragment
-    }).value();
+    }).unwrap();
 
     Pipeline pipeline = device.create_graphics_pipeline(PipelineDescriptor{
         .vertex_shader = &vertex_shader,
@@ -426,7 +429,7 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
             .depth_write_enabled = true,
             .compare = CompareFunction::GreaterEqual
         }
-    }).value();
+    }).unwrap();
 
     device.destroy_shader_module(vertex_shader);
     device.destroy_shader_module(fragment_shader);
@@ -445,7 +448,7 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
     Buffer view_buffer = device.create_buffer(BufferDescriptor {
         .size = sizeof(ViewUniform),
         .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
-    }).value();
+    }).unwrap();
     uint32_t view_buffer_index = device.add_binding(view_buffer);
     {
         void* data = device.map_buffer(view_buffer);
@@ -464,7 +467,7 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
         .dimension = TextureDimension::D2,
         .mip_level_count = 1,
         .sample_count = 1
-    }).value();
+    }).unwrap();
     TextureView depth_texture_view = device.create_texture_view(depth_texture, TextureViewDescriptor {
         .usage = TextureUsage::DepthWrite,
         .dimension = TextureDimension::D2,
@@ -475,7 +478,7 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
             .base_array_layer = 0,
             .array_layer_count = 1
         }
-    }).value();
+    }).unwrap();
 
     Extent3d extent {
         .width = window->width,
@@ -534,7 +537,7 @@ export std::expected<void, VkResult> initialize_vulkan(const flecs::world& world
         .kind(flecs::OnStart)
         .run(prepare_lights);
 
-    return {};
+    return Ok();
 }
 
 export void destroy_vulkan(const flecs::world& world) {
