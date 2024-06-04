@@ -166,6 +166,8 @@ Result<std::pair<Device, Queue>, VkResult> Adapter::open() const {
     features12.pNext = &features13;
     features12.descriptorIndexing = true;
     features12.descriptorBindingStorageBufferUpdateAfterBind = true;
+    features12.descriptorBindingStorageImageUpdateAfterBind = true;
+    features12.descriptorBindingSampledImageUpdateAfterBind = true;
     features12.descriptorBindingPartiallyBound = true;
     features12.descriptorBindingUpdateUnusedWhilePending = true;
     features12.runtimeDescriptorArray = true;
@@ -217,8 +219,9 @@ Result<void, VkResult> CommandEncoder::begin_encoding() {
     if (const auto res = vkBeginCommandBuffer(buffer, &begin_info); res != VK_SUCCESS) {
         return Err(res);
     }
-    vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bindless_pipeline_layout, 0, 1,
-                            &bindless_buffer_set, 0, nullptr);
+    const std::array descriptor_sets { bindless_buffer_set, bindless_texture_set, bindless_sampler_set };
+    vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bindless_pipeline_layout, 0, descriptor_sets.size(),
+                            descriptor_sets.data(), 0, nullptr);
 
     active = buffer;
     return Ok();
@@ -386,6 +389,20 @@ void CommandEncoder::transition_textures(const std::span<TextureBarrier>& transi
     vkCmdPipelineBarrier2(active, &dependency_info);
 }
 
+void CommandEncoder::copy_buffer_to_texture(const Buffer &buffer, const Texture &texture, const TextureUsage layout) const {
+    VkBufferImageCopy copy_region{};
+    copy_region.bufferOffset = 0;
+    copy_region.bufferRowLength = 0;
+    copy_region.bufferImageHeight = 0;
+    copy_region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy_region.imageSubresource.mipLevel = 0;
+    copy_region.imageSubresource.baseArrayLayer = 0;
+    copy_region.imageSubresource.layerCount = 1;
+    copy_region.imageExtent = VkExtent3D { texture.size.width, texture.size.height, texture.size.depth_or_array_layers };
+
+    vkCmdCopyBufferToImage(active, buffer.buffer, texture.texture, map_texture_layout(layout), 1, &copy_region);
+}
+
 void CommandEncoder::bind_pipeline(const Pipeline& pipeline) const {
     vkCmdBindPipeline(active, pipeline.bind_point, pipeline.pipeline);
 }
@@ -479,11 +496,12 @@ Result<void, VkResult> Device::initialize() {
     // Create bindless descriptor set layout
     VkDescriptorBindingFlags flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
         VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
-    VkDescriptorSetLayoutBindingFlagsCreateInfo binding_flags{
+    const VkDescriptorSetLayoutBindingFlagsCreateInfo binding_flags{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
         .bindingCount = 1,
         .pBindingFlags = &flags
     };
+
     VkDescriptorSetLayoutBinding buffer_binding{};
     buffer_binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     buffer_binding.descriptorCount = 1000;
@@ -501,15 +519,48 @@ Result<void, VkResult> Device::initialize() {
         return Err(res);
     }
 
+    VkDescriptorSetLayoutBinding texture_binding{};
+    texture_binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    texture_binding.descriptorCount = 1000;
+    texture_binding.stageFlags = VK_SHADER_STAGE_ALL;
+    texture_binding.binding = 0;
+    VkDescriptorSetLayoutCreateInfo texture_set_layout_create_info {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
+    };
+    texture_set_layout_create_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+    texture_set_layout_create_info.pNext = &binding_flags;
+    texture_set_layout_create_info.bindingCount = 1;
+    texture_set_layout_create_info.pBindings = &texture_binding;
+    if (const auto res = vkCreateDescriptorSetLayout(device, &texture_set_layout_create_info, nullptr, &texture_set_layout); res != VK_SUCCESS) {
+        return Err(res);
+    }
+
+    VkDescriptorSetLayoutBinding sampler_binding{};
+    sampler_binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    sampler_binding.descriptorCount = 1000;
+    sampler_binding.stageFlags = VK_SHADER_STAGE_ALL;
+    sampler_binding.binding = 0;
+    VkDescriptorSetLayoutCreateInfo sampler_set_layout_create_info {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO
+    };
+    sampler_set_layout_create_info.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+    sampler_set_layout_create_info.pNext = &binding_flags;
+    sampler_set_layout_create_info.bindingCount = 1;
+    sampler_set_layout_create_info.pBindings = &sampler_binding;
+    if (const auto res = vkCreateDescriptorSetLayout(device, &sampler_set_layout_create_info, nullptr, &sampler_set_layout); res != VK_SUCCESS) {
+        return Err(res);
+    }
+
     // Create bindless pipeline layout
     constexpr VkPushConstantRange push_constant{
         .stageFlags = VK_SHADER_STAGE_ALL,
         .offset = 0,
         .size = 128
     };
+    const std::array layouts { buffer_set_layout, texture_set_layout, sampler_set_layout };
     VkPipelineLayoutCreateInfo layout_create_info{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    layout_create_info.setLayoutCount = 1;
-    layout_create_info.pSetLayouts = &buffer_set_layout;
+    layout_create_info.setLayoutCount = layouts.size();
+    layout_create_info.pSetLayouts = layouts.data();
     layout_create_info.pushConstantRangeCount = 1;
     layout_create_info.pPushConstantRanges = &push_constant;
     if (const auto res = vkCreatePipelineLayout(device, &layout_create_info, nullptr, &bindless_pipeline_layout); res !=
@@ -518,21 +569,33 @@ Result<void, VkResult> Device::initialize() {
     }
 
     // Create bindless descriptor pool
-    constexpr VkDescriptorPoolSize buffer_pool_size{
-        .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        .descriptorCount = 1000
+    constexpr std::array pool_sizes {
+        VkDescriptorPoolSize {
+            .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            .descriptorCount = 1000
+        },
+        VkDescriptorPoolSize {
+            .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            .descriptorCount = 1000
+        },
+        VkDescriptorPoolSize {
+            .type = VK_DESCRIPTOR_TYPE_SAMPLER,
+            .descriptorCount = 1000
+        }
     };
     VkDescriptorPoolCreateInfo pool_create_info{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool_create_info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
-    pool_create_info.maxSets = 1;
-    pool_create_info.poolSizeCount = 1;
-    pool_create_info.pPoolSizes = &buffer_pool_size;
+    pool_create_info.maxSets = pool_sizes.size();
+    pool_create_info.poolSizeCount = pool_sizes.size();
+    pool_create_info.pPoolSizes = pool_sizes.data();
     if (const auto res = vkCreateDescriptorPool(device, &pool_create_info, nullptr, &bindless_descriptor_pool); res !=
         VK_SUCCESS) {
         return Err(res);
     }
 
     buffer_heap.initialize(device, bindless_descriptor_pool, buffer_set_layout, 1000);
+    texture_heap.initialize(device, bindless_descriptor_pool, texture_set_layout, 1000);
+    sampler_heap.initialize(device, bindless_descriptor_pool, sampler_set_layout, 1000);
 
     return Ok();
 }
@@ -540,6 +603,8 @@ Result<void, VkResult> Device::initialize() {
 void Device::destroy() {
     vkDestroyPipelineLayout(device, bindless_pipeline_layout, nullptr);
     vkDestroyDescriptorPool(device, bindless_descriptor_pool, nullptr);
+    vkDestroyDescriptorSetLayout(device, sampler_set_layout, nullptr);
+    vkDestroyDescriptorSetLayout(device, texture_set_layout, nullptr);
     vkDestroyDescriptorSetLayout(device, buffer_set_layout, nullptr);
     vmaDestroyAllocator(allocator);
     vkDestroyDevice(device, nullptr);
@@ -571,6 +636,41 @@ size_t Device::add_binding(const Buffer& buffer) {
     set_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     set_write.dstArrayElement = index;
     set_write.pBufferInfo = &buffer_info;
+
+    vkUpdateDescriptorSets(device, 1, &set_write, 0, nullptr);
+    return index;
+}
+
+size_t Device::add_binding(const TextureView& view) {
+    const size_t index = texture_heap.allocate();
+    VkDescriptorImageInfo image_info;
+    image_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    image_info.imageView = view.view;
+
+    VkWriteDescriptorSet set_write{ .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    set_write.dstBinding = 0;
+    set_write.dstSet = texture_heap.set;
+    set_write.descriptorCount = 1;
+    set_write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    set_write.dstArrayElement = index;
+    set_write.pImageInfo = &image_info;
+
+    vkUpdateDescriptorSets(device, 1, &set_write, 0, nullptr);
+    return index;
+}
+
+size_t Device::add_binding(const Sampler& sampler) {
+    const size_t index = sampler_heap.allocate();
+    VkDescriptorImageInfo image_info;
+    image_info.sampler = sampler.sampler;
+
+    VkWriteDescriptorSet set_write{ .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    set_write.dstBinding = 0;
+    set_write.dstSet = sampler_heap.set;
+    set_write.descriptorCount = 1;
+    set_write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    set_write.dstArrayElement = index;
+    set_write.pImageInfo = &image_info;
 
     vkUpdateDescriptorSets(device, 1, &set_write, 0, nullptr);
     return index;
@@ -657,6 +757,8 @@ Device::create_command_encoder(const CommandEncoderDescriptor& descriptor) const
     CommandEncoder encoder{};
     encoder.device = device;
     encoder.bindless_buffer_set = buffer_heap.set;
+    encoder.bindless_texture_set = texture_heap.set;
+    encoder.bindless_sampler_set = sampler_heap.set;
     encoder.bindless_pipeline_layout = bindless_pipeline_layout;
 
     VkCommandPoolCreateInfo create_info{.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -898,6 +1000,7 @@ Result<Texture, VkResult> Device::create_texture(const TextureDescriptor& descri
 
     Texture texture{};
     texture.format = descriptor.format;
+    texture.size = descriptor.size;
     if (const auto res = vmaCreateImage(allocator, &create_info, &alloc_info, &texture.texture, &texture.allocation,
                                         nullptr); res != VK_SUCCESS) {
         return Err(res);
@@ -936,6 +1039,23 @@ Result<TextureView, VkResult> Device::create_texture_view(const Texture& texture
 
 void Device::destroy_texture_view(const TextureView& view) const {
     vkDestroyImageView(device, view.view, nullptr);
+}
+
+Result<Sampler, VkResult> Device::create_sampler(const SamplerDescriptor& descriptor) const {
+    VkSamplerCreateInfo create_info { .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+    create_info.magFilter = VK_FILTER_LINEAR;
+    create_info.minFilter = VK_FILTER_LINEAR;
+
+    Sampler sampler{};
+    if (const auto res = vkCreateSampler(device, &create_info, nullptr, &sampler.sampler); res != VK_SUCCESS) {
+        return Err(res);
+    }
+
+    return Ok(sampler);
+}
+
+void Device::destroy_sampler(const Sampler &sampler) const {
+    vkDestroySampler(device, sampler.sampler, nullptr);
 }
 
 VkResult create_debug_utils_messenger_ext(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,

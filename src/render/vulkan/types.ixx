@@ -91,6 +91,8 @@ export enum class TextureUsage: uint32_t {
     RenderTarget = 1 << 3,
     DepthRead = 1 << 4,
     DepthWrite = 1 << 5,
+    ShaderReadOnly = 1 << 6,
+    Resource = 1 << 7,
 };
 DEFINE_ENUM_OP(TextureUsage)
 

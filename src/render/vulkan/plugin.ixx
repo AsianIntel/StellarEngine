@@ -9,6 +9,7 @@ module;
 #include <glm/mat4x4.hpp>
 #include <glm/ext/matrix_clip_space.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/packing.hpp>
 #include <iostream>
 
 #pragma warning(disable: 4267)
@@ -39,6 +40,12 @@ struct GPUMesh {
 
 export struct Material {
     glm::vec4 color;
+};
+
+struct GPUMaterial {
+    glm::vec4 color;
+    uint32_t color_texture;
+    glm::vec3 padding;
 };
 
 export struct Light {
@@ -78,6 +85,9 @@ struct RenderContext {
     Buffer joint_buffer{};
     Texture depth_texture{};
     TextureView depth_texture_view{};
+    Sampler linear_sampler{};
+    Texture board_texture{};
+    TextureView board_texture_view{};
 
     uint32_t vertex_buffer_index{};
     uint32_t view_buffer_index{};
@@ -242,7 +252,7 @@ void prepare_meshes(flecs::iter& it) {
 }
 
 void prepare_materials(flecs::iter& it) {
-    std::vector<Material> all_materials {};
+    std::vector<GPUMaterial> all_materials {};
 
     if (!it.next()) return;
     auto context = it.field<RenderContext>(0);
@@ -250,7 +260,10 @@ void prepare_materials(flecs::iter& it) {
         auto material = it.field<Material>(1);
         for (const auto i: it) {
             uint32_t index = all_materials.size();
-            all_materials.push_back(material[i]);
+            all_materials.push_back(GPUMaterial {
+                .color = material[i].color,
+                .color_texture = 0,
+            });
             it.entity(i).set<DynamicUniformIndex<Material>>({ index });
         }
     } while (it.next());
@@ -480,6 +493,100 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         }
     }).unwrap();
 
+    Sampler linear_sampler = device.create_sampler(SamplerDescriptor {}).unwrap();
+    device.add_binding(linear_sampler);
+
+    const uint32_t black = glm::packUnorm4x8(glm::vec4(0, 0, 0, 0));
+    const uint32_t magenta = glm::packUnorm4x8(glm::vec4(1, 0, 1, 1));
+    std::array<uint32_t, 16 *16 > pixels;
+    for (int x = 0; x < 16; x++) {
+        for (int y = 0; y < 16; y++) {
+            pixels[y*16 + x] = ((x % 2) ^ (y % 2)) ? magenta : black;
+        }
+    }
+    Buffer board_buffer = device.create_buffer(BufferDescriptor {
+        .size = pixels.size() * sizeof(uint32_t),
+        .usage = BufferUsage::Storage | BufferUsage::MapReadWrite | BufferUsage::TransferSrc
+    }).unwrap();
+    {
+        void* data = device.map_buffer(board_buffer);
+        memcpy(data, pixels.data(), pixels.size() * sizeof(uint32_t));
+        device.unmap_buffer(board_buffer);
+    }
+    Texture board_texture = device.create_texture(TextureDescriptor {
+        .size = Extent3d {
+            .width = 16,
+            .height = 16,
+            .depth_or_array_layers = 1,
+        },
+        .format = TextureFormat::Rgba8Unorm,
+        .usage = TextureUsage::Resource,
+        .dimension = TextureDimension::D2,
+        .mip_level_count = 1,
+        .sample_count = 1
+    }).unwrap();
+    TextureView board_texture_view = device.create_texture_view(board_texture, TextureViewDescriptor {
+        .usage = TextureUsage::Resource,
+        .dimension = TextureDimension::D2,
+        .range = ImageSubresourceRange {
+            .aspect = FormatAspect::Color,
+            .base_mip_level = 0,
+            .mip_level_count = 1,
+            .base_array_layer = 0,
+            .array_layer_count = 1
+        }
+    }).unwrap();
+    device.add_binding(board_texture_view);
+
+    {
+        encoder.begin_encoding().unwrap();
+        {
+            std::array barriers {
+                TextureBarrier {
+                    .texture = &board_texture,
+                    .range = ImageSubresourceRange {
+                        .aspect = FormatAspect::Color,
+                        .base_mip_level = 0,
+                        .mip_level_count = 1,
+                        .base_array_layer = 0,
+                        .array_layer_count = 1
+                    },
+                    .before = TextureUsage::Undefined,
+                    .after = TextureUsage::CopyDst
+                }
+            };
+            encoder.transition_textures(barriers);
+        }
+        encoder.copy_buffer_to_texture(board_buffer, board_texture, TextureUsage::CopyDst);
+        {
+            std::array barriers {
+                TextureBarrier {
+                    .texture = &board_texture,
+                    .range = ImageSubresourceRange {
+                        .aspect = FormatAspect::Color,
+                        .base_mip_level = 0,
+                        .mip_level_count = 1,
+                        .base_array_layer = 0,
+                        .array_layer_count = 1
+                    },
+                    .before = TextureUsage::CopyDst,
+                    .after = TextureUsage::ShaderReadOnly
+                }
+            };
+            encoder.transition_textures(barriers);
+        }
+
+        auto command_buffer = encoder.end_encoding().unwrap();
+
+        std::array command_buffers { command_buffer };
+        queue.submit(command_buffers, {}, {}, render_fence).unwrap();
+
+        device.wait_for_fence(render_fence).unwrap();
+        encoder.reset_all(command_buffers);
+    }
+
+    device.destroy_buffer(board_buffer);
+
     Extent3d extent {
         .width = window->width,
         .height = window->height,
@@ -501,6 +608,9 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         .view_buffer = view_buffer,
         .depth_texture = depth_texture,
         .depth_texture_view = depth_texture_view,
+        .linear_sampler = linear_sampler,
+        .board_texture = board_texture,
+        .board_texture_view = board_texture_view,
         .view_buffer_index = view_buffer_index
     };
     world.set(context);
@@ -543,6 +653,9 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
 export void destroy_vulkan(const flecs::world& world) {
     RenderContext* context = world.get_mut<RenderContext>();
 
+    context->device.destroy_texture_view(context->board_texture_view);
+    context->device.destroy_texture(context->board_texture);
+    context->device.destroy_sampler(context->linear_sampler);
     context->device.destroy_texture_view(context->depth_texture_view);
     context->device.destroy_texture(context->depth_texture);
     context->device.destroy_buffer(context->joint_buffer);

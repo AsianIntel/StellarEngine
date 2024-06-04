@@ -3,6 +3,7 @@ struct PSInput {
     float4 color: COLOR;
     float4 normal: NORMAL;
     float4 frag_pos: POSITION;
+    float2 uv: UV;
 };
 
 struct Vertex {
@@ -22,6 +23,8 @@ struct View {
 
 struct Material {
     float4 color;
+    uint color_texture;
+    float3 padding;
 };
 
 struct Transform {
@@ -48,6 +51,8 @@ struct PushConstants {
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> push_constants: register(b0, space0);
 [[vk::binding(0, 0)]] ByteAddressBuffer bindless_buffers[]: register(t1);
+[[vk::binding(0, 1)]] Texture2D<float4> bindless_textures[]: register(t2);
+[[vk::binding(0, 2)]] SamplerState bindless_samplers[]: register(t3);
 
 float4x4 get_skin_matrix(Vertex vertex) {
     float4x4 joint0 = bindless_buffers[push_constants.joint_buffer_index].Load<float4x4>(64*vertex.joints.x);
@@ -77,12 +82,16 @@ PSInput VSMain(uint vertex_id: SV_VertexId) {
     result.color = material.color;
     result.normal = vertex.normal;
     result.frag_pos = frag_pos;
+    result.uv = vertex.uv;
     return result;
 }
 
 float4 PSMain(PSInput input): SV_TARGET {
     Light light = bindless_buffers[push_constants.light_buffer_index].Load<Light>(0);
     View view = bindless_buffers[push_constants.view_buffer_index].Load<View>(0);
+    Material material = bindless_buffers[push_constants.material_buffer_index].Load<Material>(push_constants.material_buffer_offset * 16);
+    Texture2D<float4> color_texture = bindless_textures[material.color_texture];
+    SamplerState sampler = bindless_samplers[0];
 
     float ambient_strength = 0.1f;
     float3 ambient = ambient_strength * light.color.xyz;
@@ -98,6 +107,6 @@ float4 PSMain(PSInput input): SV_TARGET {
     float spec = pow(max(dot(view_dir, reflect_dir), 0.0f), 32);
     float3 specular = specular_strength * spec * light.color.xyz;
 
-    float3 color = (ambient + diffuse + specular) * input.color.xyz;
+    float3 color = (ambient + diffuse + specular) * color_texture.Sample(sampler, input.uv).xyz;
     return float4(color, 1.0f);
 }

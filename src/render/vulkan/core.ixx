@@ -24,6 +24,7 @@ export struct CommandEncoder;
 export struct CommandBuffer;
 export struct TextureView;
 export struct Texture;
+export struct Sampler;
 export struct SurfaceTexture;
 export struct Fence;
 export struct Semaphore;
@@ -113,6 +114,8 @@ export struct TextureViewDescriptor {
     ImageSubresourceRange range;
 };
 
+export struct SamplerDescriptor {};
+
 export struct Instance {
     VkInstance instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT debug_messenger = VK_NULL_HANDLE;
@@ -145,6 +148,10 @@ export struct DescriptorHeap {
     void free(size_t index);
 };
 
+struct Sampler {
+    VkSampler sampler{};
+};
+
 struct Device {
     VkDevice device;
     VkPhysicalDevice adapter{};
@@ -155,7 +162,11 @@ struct Device {
     VkPipelineLayout bindless_pipeline_layout{};
     VkDescriptorPool bindless_descriptor_pool{};
     VkDescriptorSetLayout buffer_set_layout{};
-    DescriptorHeap buffer_heap {};
+    VkDescriptorSetLayout texture_set_layout{};
+    VkDescriptorSetLayout sampler_set_layout{};
+    DescriptorHeap buffer_heap{};
+    DescriptorHeap texture_heap{};
+    DescriptorHeap sampler_heap{};
 
     Device() = default;
     Device(const Device&) = delete;
@@ -168,6 +179,8 @@ struct Device {
 
     Result<void, VkResult> wait_for_fence(const Fence& fence) const;
     size_t add_binding(const Buffer& buffer);
+    size_t add_binding(const TextureView& view);
+    size_t add_binding(const Sampler& sampler);
     void* map_buffer(const Buffer& buffer) const;
     void unmap_buffer(const Buffer& buffer) const;
 
@@ -189,6 +202,8 @@ struct Device {
     void destroy_texture(const Texture& texture) const;
     Result<TextureView, VkResult> create_texture_view(const Texture& texture, const TextureViewDescriptor& descriptor) const;
     void destroy_texture_view(const TextureView& view) const;
+    Result<Sampler, VkResult> create_sampler(const SamplerDescriptor& descriptor) const;
+    void destroy_sampler(const Sampler& sampler) const;
 };
 
 struct Queue {
@@ -228,11 +243,14 @@ struct CommandEncoder {
     VkCommandBuffer active{};
 
     VkDescriptorSet bindless_buffer_set{};
+    VkDescriptorSet bindless_texture_set{};
+    VkDescriptorSet bindless_sampler_set{};
     VkPipelineLayout bindless_pipeline_layout{};
 
     Result<void, VkResult> begin_encoding();
     void begin_render_pass(const RenderPassDescriptor& descriptor) const;
     void transition_textures(const std::span<TextureBarrier>& barriers) const;
+    void copy_buffer_to_texture(const Buffer& buffer, const Texture& texture, TextureUsage layout) const;
     void bind_pipeline(const Pipeline& pipeline) const;
     void bind_index_buffer(const Buffer& buffer) const;
     void set_push_constants(const std::span<uint32_t>& push_constants) const;
@@ -251,6 +269,7 @@ struct Texture {
     VkImage texture{};
     VmaAllocation allocation{};
     TextureFormat format{};
+    Extent3d size{};
 };
 
 struct TextureView {
@@ -336,6 +355,8 @@ constexpr VkImageLayout map_texture_layout(const TextureUsage usage) {
         return VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
     case TextureUsage::DepthWrite:
         return VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    case TextureUsage::ShaderReadOnly:
+        return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     default:
         unreachable();
     }
@@ -412,6 +433,9 @@ constexpr VkImageUsageFlags map_texture_usage(const TextureUsage usage) {
     }
     if ((usage & TextureUsage::DepthWrite) == TextureUsage::DepthWrite) {
         flags |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    }
+    if ((usage & TextureUsage::Resource) == TextureUsage::Resource) {
+        flags |= VK_IMAGE_USAGE_SAMPLED_BIT;
     }
     return flags;
 }
