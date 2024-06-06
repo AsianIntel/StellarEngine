@@ -8,6 +8,8 @@ module;
 #include <glm/vec2.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtx/quaternion.hpp>
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb/stb_image.h>
 
 #pragma warning(disable : 4267 4244)
 
@@ -18,6 +20,8 @@ import stellar.render.primitives;
 import stellar.animation;
 import stellar.scene.transform;
 import stellar.core.result;
+import stellar.core;
+import stellar.render.types;
 
 export struct GltfMesh {
     Mesh mesh;
@@ -37,20 +41,34 @@ export struct GltfJoint {
     uint32_t node_index;
 };
 
+export struct GltfSampler {
+    Filter min_filter;
+    Filter mag_filter;
+};
+
+export struct GltfMaterial {
+    glm::vec4 color;
+    uint32_t color_texture_index;
+    uint32_t color_sampler_index;
+};
+
 export struct Gltf {
     std::vector<GltfMesh> meshes;
-    std::vector<Material> materials;
+    std::vector<GltfMaterial> materials;
     std::vector<GltfNode> nodes;
     std::vector<GltfJoint> joints;
     std::vector<AnimationClip> animations;
     std::vector<uint32_t> top_nodes;
+    std::vector<GltfSampler> samplers;
+    std::vector<CPUTexture> textures;
 };
 
 export Result<Gltf, std::string> load_gltf(std::filesystem::path file_path) {
     fastgltf::Parser parser{};
     constexpr auto gltf_options = fastgltf::Options::DontRequireValidAssetMember
         | fastgltf::Options::AllowDouble
-        | fastgltf::Options::LoadExternalBuffers;
+        | fastgltf::Options::LoadExternalBuffers
+        | fastgltf::Options::LoadExternalImages;
 
     auto data = fastgltf::GltfDataBuffer::FromPath(file_path);
     fastgltf::Asset gltf;
@@ -75,12 +93,76 @@ export Result<Gltf, std::string> load_gltf(std::filesystem::path file_path) {
         return Err(std::string("Failed to determine gltf type"));
     }
 
-    std::vector<Material> materials;
+    std::vector<GltfMaterial> materials;
     std::vector<GltfMesh> meshes;
     std::vector<GltfNode> nodes;
     std::vector<uint32_t> top_nodes;
     std::vector<GltfJoint> joints;
     std::vector<AnimationClip> animations;
+    std::vector<GltfSampler> samplers;
+    std::vector<CPUTexture> textures;
+
+    for (fastgltf::Sampler& sampler: gltf.samplers) {
+        Filter min_filter;
+        switch (sampler.minFilter.value()) {
+            case fastgltf::Filter::Linear:
+            case fastgltf::Filter::LinearMipMapLinear:
+            case fastgltf::Filter::LinearMipMapNearest:
+                min_filter = Filter::Linear;
+                break;
+            case fastgltf::Filter::Nearest:
+            case fastgltf::Filter::NearestMipMapLinear:
+            case fastgltf::Filter::NearestMipMapNearest:
+                min_filter = Filter::Nearest;
+                break;
+        }
+        Filter mag_filter;
+        switch (sampler.magFilter.value()) {
+            case fastgltf::Filter::Linear:
+            case fastgltf::Filter::LinearMipMapLinear:
+            case fastgltf::Filter::LinearMipMapNearest:
+                mag_filter = Filter::Linear;
+            break;
+            case fastgltf::Filter::Nearest:
+            case fastgltf::Filter::NearestMipMapLinear:
+            case fastgltf::Filter::NearestMipMapNearest:
+                mag_filter = Filter::Nearest;
+            break;
+        }
+        samplers.push_back(GltfSampler {
+            .min_filter = min_filter,
+            .mag_filter = mag_filter
+        });
+    }
+
+    for (fastgltf::Texture& texture: gltf.textures) {
+        const fastgltf::Image& image = gltf.images[texture.imageIndex.value()];
+        std::visit(fastgltf::visitor {
+            [&](fastgltf::sources::BufferView view) {
+                const fastgltf::BufferView& buffer_view = gltf.bufferViews[view.bufferViewIndex];
+                const fastgltf::Buffer& buffer = gltf.buffers[buffer_view.bufferIndex];
+
+                std::visit(fastgltf::visitor {
+                    [&](const fastgltf::sources::Array& array) {
+                        int width, height, channels;
+                        uint8_t* buffer_data = stbi_load_from_memory(array.bytes.data() + buffer_view.byteOffset, buffer_view.byteLength, &width, &height, &channels, 4);
+                        if (buffer_data) {
+                            std::vector<uint8_t> image_data(width * height * 4);
+                            memcpy(image_data.data(), buffer_data, width * height * 4);
+                            stbi_image_free(buffer_data);
+                            textures.push_back(CPUTexture {
+                                .data = std::move(image_data),
+                                .width = static_cast<uint32_t>(width),
+                                .height = static_cast<uint32_t>(height)
+                            });
+                        }
+                    },
+                    [](auto& arg) { unreachable(); }
+                }, buffer.data);
+            },
+            [](auto& arg) { unreachable(); }
+        }, image.data);
+    }
     
     for (fastgltf::Animation& animation: gltf.animations) {
         std::vector<std::vector<AnimationCurve>> curves(gltf.nodes.size());
@@ -133,11 +215,13 @@ export Result<Gltf, std::string> load_gltf(std::filesystem::path file_path) {
     }
     
     for (fastgltf::Material& mat: gltf.materials) {
-        Material& material = materials.emplace_back();
+        GltfMaterial& material = materials.emplace_back();
         material.color[0] = mat.pbrData.baseColorFactor[0];
         material.color[1] = mat.pbrData.baseColorFactor[1];
         material.color[2] = mat.pbrData.baseColorFactor[2];
         material.color[3] = mat.pbrData.baseColorFactor[3];
+        material.color_texture_index = mat.pbrData.baseColorTexture.value().textureIndex;
+        material.color_sampler_index = gltf.textures[material.color_texture_index].samplerIndex.value();
     }
 
     for (fastgltf::Skin& skin: gltf.skins) {
@@ -269,6 +353,8 @@ export Result<Gltf, std::string> load_gltf(std::filesystem::path file_path) {
         .nodes = nodes,
         .joints = joints,
         .animations = animations,
-        .top_nodes = top_nodes
+        .top_nodes = top_nodes,
+        .samplers = samplers,
+        .textures = textures,
     });
 }

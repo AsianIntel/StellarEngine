@@ -134,3 +134,8 @@ export struct DepthStencilState {
     bool depth_write_enabled;
     CompareFunction compare;
 };
+
+export enum class Filter {
+    Nearest,
+    Linear
+};

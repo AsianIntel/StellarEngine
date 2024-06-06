@@ -24,6 +24,7 @@ struct View {
 struct Material {
     float4 color;
     uint color_texture;
+    uint color_sampler;
     float3 padding;
 };
 
@@ -91,7 +92,7 @@ float4 PSMain(PSInput input): SV_TARGET {
     View view = bindless_buffers[push_constants.view_buffer_index].Load<View>(0);
     Material material = bindless_buffers[push_constants.material_buffer_index].Load<Material>(push_constants.material_buffer_offset * 16);
     Texture2D<float4> color_texture = bindless_textures[material.color_texture];
-    SamplerState sampler = bindless_samplers[0];
+    SamplerState sampler = bindless_samplers[material.color_sampler];
 
     float ambient_strength = 0.1f;
     float3 ambient = ambient_strength * light.color.xyz;

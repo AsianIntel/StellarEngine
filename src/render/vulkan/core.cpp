@@ -1043,8 +1043,8 @@ void Device::destroy_texture_view(const TextureView& view) const {
 
 Result<Sampler, VkResult> Device::create_sampler(const SamplerDescriptor& descriptor) const {
     VkSamplerCreateInfo create_info { .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-    create_info.magFilter = VK_FILTER_LINEAR;
-    create_info.minFilter = VK_FILTER_LINEAR;
+    create_info.magFilter = map_filter(descriptor.mag_filter);
+    create_info.minFilter = map_filter(descriptor.min_filter);
 
     Sampler sampler{};
     if (const auto res = vkCreateSampler(device, &create_info, nullptr, &sampler.sampler); res != VK_SUCCESS) {

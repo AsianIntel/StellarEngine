@@ -32,9 +32,23 @@ struct App {
 
         std::vector<flecs::entity> materials;
         std::vector<flecs::entity> meshes;
+        std::vector<flecs::entity> textures;
+        std::vector<flecs::entity> samplers;
         Gltf gltf = load_gltf("../../assets/archer.glb").unwrap();
+        for (const auto& sampler: gltf.samplers) {
+            flecs::entity entity = world.entity().set<CPUSampler>(CPUSampler { .min_filter = sampler.min_filter, .mag_filter = sampler.mag_filter });
+            samplers.push_back(entity);
+        }
+        for (const auto& texture: gltf.textures) {
+            flecs::entity entity = world.entity().set<CPUTexture>(texture);
+            textures.push_back(entity);
+        }
         for (const auto& material: gltf.materials) {
-            flecs::entity entity = world.entity().set<Material>(material);
+            flecs::entity entity = world.entity().set<Material>(Material {
+                .color = material.color,
+                .color_texture = textures[material.color_texture_index],
+                .color_sampler = samplers[material.color_sampler_index]
+            });
             materials.push_back(entity);
         }
         for (const auto& mesh: gltf.meshes) {

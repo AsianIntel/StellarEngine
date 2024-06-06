@@ -42,6 +42,7 @@ constexpr VkImageType map_image_type(TextureDimension dimension);
 constexpr VkImageViewType map_image_view_type(TextureDimension dimension);
 constexpr VkImageUsageFlags map_texture_usage(TextureUsage usage);
 constexpr VkCompareOp map_compare_function(CompareFunction function);
+constexpr VkFilter map_filter(Filter filter);
 
 export struct InstanceDescriptor {
     bool validation;
@@ -114,7 +115,10 @@ export struct TextureViewDescriptor {
     ImageSubresourceRange range;
 };
 
-export struct SamplerDescriptor {};
+export struct SamplerDescriptor {
+    Filter min_filter;
+    Filter mag_filter;
+};
 
 export struct Instance {
     VkInstance instance = VK_NULL_HANDLE;
@@ -458,6 +462,17 @@ constexpr VkCompareOp map_compare_function(const CompareFunction function) {
         return VK_COMPARE_OP_NOT_EQUAL;
     case CompareFunction::Always:
         return VK_COMPARE_OP_ALWAYS;
+    default:
+        unreachable();
+    }
+}
+
+constexpr VkFilter map_filter(const Filter filter) {
+    switch(filter) {
+    case Filter::Nearest:
+        return VK_FILTER_NEAREST;
+    case Filter::Linear:
+        return VK_FILTER_LINEAR;
     default:
         unreachable();
     }

@@ -40,12 +40,15 @@ struct GPUMesh {
 
 export struct Material {
     glm::vec4 color;
+    flecs::entity color_texture;
+    flecs::entity color_sampler;
 };
 
 struct GPUMaterial {
     glm::vec4 color;
     uint32_t color_texture;
-    glm::vec3 padding;
+    uint32_t color_sampler;
+    glm::vec2 padding;
 };
 
 export struct Light {
@@ -56,6 +59,28 @@ export struct Light {
 export struct Joint {
     glm::mat4 inverse_bind;
     uint32_t buffer_offset;
+};
+
+export struct CPUTexture {
+    std::vector<uint8_t> data;
+    uint32_t width;
+    uint32_t height;
+};
+
+export struct GPUTexture {
+    Texture texture;
+    TextureView view;
+    uint32_t binding;
+};
+
+export struct CPUSampler {
+    Filter min_filter;
+    Filter mag_filter;
+};
+
+export struct GPUSampler {
+    Sampler sampler;
+    uint32_t binding;
 };
 
 template<typename T>
@@ -85,9 +110,6 @@ struct RenderContext {
     Buffer joint_buffer{};
     Texture depth_texture{};
     TextureView depth_texture_view{};
-    Sampler linear_sampler{};
-    Texture board_texture{};
-    TextureView board_texture_view{};
 
     uint32_t vertex_buffer_index{};
     uint32_t view_buffer_index{};
@@ -145,7 +167,7 @@ void render(flecs::iter& it) {
 
     do {
         auto mesh = it.field<GPUMesh>(1);
-        auto material = it.field<DynamicUniformIndex<Material>>(2);
+        auto material_index = it.field<DynamicUniformIndex<Material>>(2);
         auto transform = it.field<DynamicUniformIndex<GlobalTransform>>(3);
 
         for (const auto i: it) {
@@ -154,12 +176,12 @@ void render(flecs::iter& it) {
                 mesh[i].vertex_offset,
                 context->view_buffer_index,
                 context->material_buffer_index,
-                material[i].offset,
+                material_index[i].offset,
                 context->transform_buffer_index,
                 transform[i].offset,
                 context->light_buffer_index,
                 static_cast<uint32_t>(context->light_buffer.size / sizeof(Light)),
-                context->joint_buffer_index
+                context->joint_buffer_index,
             };
             context->encoder.set_push_constants(push_constants);
             if (mesh->index_count.has_value()) {
@@ -260,9 +282,12 @@ void prepare_materials(flecs::iter& it) {
         auto material = it.field<Material>(1);
         for (const auto i: it) {
             uint32_t index = all_materials.size();
+            const GPUTexture* texture = material[i].color_texture.get<GPUTexture>();
+            const GPUSampler* sampler = material[i].color_sampler.get<GPUSampler>();
             all_materials.push_back(GPUMaterial {
                 .color = material[i].color,
-                .color_texture = 0,
+                .color_texture = texture->binding,
+                .color_sampler = sampler->binding
             });
             it.entity(i).set<DynamicUniformIndex<Material>>({ index });
         }
@@ -359,6 +384,121 @@ void prepare_lights(flecs::iter& it) {
         context->device.unmap_buffer(context->light_buffer);
     }
     context->light_buffer_index = context->device.add_binding(context->light_buffer);
+}
+
+void prepare_textures(flecs::iter& it) {
+    std::vector<Buffer> texture_buffers;
+    std::vector<Texture> textures;
+    if (!it.next()) return;
+    auto context = it.field<RenderContext>(0);
+    do {
+        auto cpu_texture = it.field<CPUTexture>(1);
+        for (const auto i: it) {
+            Buffer buffer = context->device.create_buffer(BufferDescriptor {
+                .size = cpu_texture[i].width * cpu_texture[i].height * 4,
+                .usage = BufferUsage::Storage | BufferUsage::MapReadWrite | BufferUsage::TransferSrc
+            }).unwrap();
+            {
+                void* data = context->device.map_buffer(buffer);
+                memcpy(data, cpu_texture[i].data.data(), cpu_texture[i].data.size());
+                context->device.unmap_buffer(buffer);
+            }
+            Texture texture = context->device.create_texture(TextureDescriptor {
+                .size = Extent3d {
+                    .width = cpu_texture[i].width,
+                    .height = cpu_texture[i].height,
+                    .depth_or_array_layers = 1
+                },
+                .format = TextureFormat::Rgba8Unorm,
+                .usage = TextureUsage::Resource | TextureUsage::CopyDst,
+                .dimension = TextureDimension::D2,
+                .mip_level_count = 1,
+                .sample_count = 1
+            }).unwrap();
+            TextureView texture_view = context->device.create_texture_view(texture, TextureViewDescriptor {
+                .usage = TextureUsage::Resource,
+                .dimension = TextureDimension::D2,
+                .range = ImageSubresourceRange {
+                    .aspect = FormatAspect::Color,
+                    .base_mip_level = 0,
+                    .mip_level_count = 1,
+                    .base_array_layer = 0,
+                    .array_layer_count = 1
+                }
+            }).unwrap();
+            const uint32_t binding_index = context->device.add_binding(texture_view);
+            it.entity(i).set<GPUTexture>(GPUTexture {
+                .texture = texture,
+                .view = texture_view,
+                .binding = binding_index
+            });
+
+            texture_buffers.push_back(buffer);
+            textures.push_back(texture);
+        }
+    } while (it.next());
+
+    context->encoder.begin_encoding().unwrap();
+    for (uint32_t i = 0; i < textures.size(); i++) {
+        {
+            std::array barriers {
+                TextureBarrier {
+                    .texture = &textures[i],
+                    .range = ImageSubresourceRange {
+                        .aspect = FormatAspect::Color,
+                        .base_mip_level = 0,
+                        .mip_level_count = 1,
+                        .base_array_layer = 0,
+                        .array_layer_count = 1
+                    },
+                    .before = TextureUsage::Undefined,
+                    .after = TextureUsage::CopyDst
+                }
+            };
+            context->encoder.transition_textures(barriers);
+        }
+        context->encoder.copy_buffer_to_texture(texture_buffers[i], textures[i], TextureUsage::CopyDst);
+        {
+            std::array barriers {
+                TextureBarrier {
+                    .texture = &textures[i],
+                    .range = ImageSubresourceRange {
+                        .aspect = FormatAspect::Color,
+                        .base_mip_level = 0,
+                        .mip_level_count = 1,
+                        .base_array_layer = 0,
+                        .array_layer_count = 1
+                    },
+                    .before = TextureUsage::CopyDst,
+                    .after = TextureUsage::ShaderReadOnly
+                }
+            };
+            context->encoder.transition_textures(barriers);
+        }
+    }
+    const auto command_buffer = context->encoder.end_encoding().unwrap();
+
+    std::array command_buffers { command_buffer };
+    context->queue.submit(command_buffers, {}, {}, context->render_fence).unwrap();
+
+    context->device.wait_for_fence(context->render_fence).unwrap();
+    context->encoder.reset_all(command_buffers);
+
+    for (const auto& buffer: texture_buffers) {
+        context->device.destroy_buffer(buffer);
+    }
+}
+
+void prepare_sampler(flecs::entity entity, RenderContext& context, const CPUSampler& cpu_sampler) {
+    const Sampler sampler = context.device.create_sampler(SamplerDescriptor {
+        .min_filter = cpu_sampler.min_filter,
+        .mag_filter = cpu_sampler.mag_filter
+    }).unwrap();
+    const uint32_t binding = context.device.add_binding(sampler);
+    entity.set<GPUSampler>(GPUSampler {
+        .sampler = sampler,
+        .binding = binding
+    });
 }
 
 export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
@@ -493,100 +633,6 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         }
     }).unwrap();
 
-    Sampler linear_sampler = device.create_sampler(SamplerDescriptor {}).unwrap();
-    device.add_binding(linear_sampler);
-
-    const uint32_t black = glm::packUnorm4x8(glm::vec4(0, 0, 0, 0));
-    const uint32_t magenta = glm::packUnorm4x8(glm::vec4(1, 0, 1, 1));
-    std::array<uint32_t, 16 *16 > pixels;
-    for (int x = 0; x < 16; x++) {
-        for (int y = 0; y < 16; y++) {
-            pixels[y*16 + x] = ((x % 2) ^ (y % 2)) ? magenta : black;
-        }
-    }
-    Buffer board_buffer = device.create_buffer(BufferDescriptor {
-        .size = pixels.size() * sizeof(uint32_t),
-        .usage = BufferUsage::Storage | BufferUsage::MapReadWrite | BufferUsage::TransferSrc
-    }).unwrap();
-    {
-        void* data = device.map_buffer(board_buffer);
-        memcpy(data, pixels.data(), pixels.size() * sizeof(uint32_t));
-        device.unmap_buffer(board_buffer);
-    }
-    Texture board_texture = device.create_texture(TextureDescriptor {
-        .size = Extent3d {
-            .width = 16,
-            .height = 16,
-            .depth_or_array_layers = 1,
-        },
-        .format = TextureFormat::Rgba8Unorm,
-        .usage = TextureUsage::Resource,
-        .dimension = TextureDimension::D2,
-        .mip_level_count = 1,
-        .sample_count = 1
-    }).unwrap();
-    TextureView board_texture_view = device.create_texture_view(board_texture, TextureViewDescriptor {
-        .usage = TextureUsage::Resource,
-        .dimension = TextureDimension::D2,
-        .range = ImageSubresourceRange {
-            .aspect = FormatAspect::Color,
-            .base_mip_level = 0,
-            .mip_level_count = 1,
-            .base_array_layer = 0,
-            .array_layer_count = 1
-        }
-    }).unwrap();
-    device.add_binding(board_texture_view);
-
-    {
-        encoder.begin_encoding().unwrap();
-        {
-            std::array barriers {
-                TextureBarrier {
-                    .texture = &board_texture,
-                    .range = ImageSubresourceRange {
-                        .aspect = FormatAspect::Color,
-                        .base_mip_level = 0,
-                        .mip_level_count = 1,
-                        .base_array_layer = 0,
-                        .array_layer_count = 1
-                    },
-                    .before = TextureUsage::Undefined,
-                    .after = TextureUsage::CopyDst
-                }
-            };
-            encoder.transition_textures(barriers);
-        }
-        encoder.copy_buffer_to_texture(board_buffer, board_texture, TextureUsage::CopyDst);
-        {
-            std::array barriers {
-                TextureBarrier {
-                    .texture = &board_texture,
-                    .range = ImageSubresourceRange {
-                        .aspect = FormatAspect::Color,
-                        .base_mip_level = 0,
-                        .mip_level_count = 1,
-                        .base_array_layer = 0,
-                        .array_layer_count = 1
-                    },
-                    .before = TextureUsage::CopyDst,
-                    .after = TextureUsage::ShaderReadOnly
-                }
-            };
-            encoder.transition_textures(barriers);
-        }
-
-        auto command_buffer = encoder.end_encoding().unwrap();
-
-        std::array command_buffers { command_buffer };
-        queue.submit(command_buffers, {}, {}, render_fence).unwrap();
-
-        device.wait_for_fence(render_fence).unwrap();
-        encoder.reset_all(command_buffers);
-    }
-
-    device.destroy_buffer(board_buffer);
-
     Extent3d extent {
         .width = window->width,
         .height = window->height,
@@ -608,9 +654,6 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         .view_buffer = view_buffer,
         .depth_texture = depth_texture,
         .depth_texture_view = depth_texture_view,
-        .linear_sampler = linear_sampler,
-        .board_texture = board_texture,
-        .board_texture_view = board_texture_view,
         .view_buffer_index = view_buffer_index
     };
     world.set(context);
@@ -626,9 +669,22 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         .kind(flecs::OnStart)
         .run(prepare_meshes);
 
+    world.system<RenderContext, CPUSampler>("Prepare Samplers")
+        .term_at(0).singleton().inout(flecs::InOut)
+        .write<GPUSampler>()
+        .kind(flecs::OnStart)
+        .each(prepare_sampler);
+
+    world.system<RenderContext, CPUTexture>("Prepare Textures")
+        .term_at(0).singleton().inout(flecs::InOut)
+        .write<GPUTexture>()
+        .kind(flecs::OnStart)
+        .run(prepare_textures);
+
     world.system<RenderContext, Material>("Prepare Materials")
         .term_at(0).singleton().inout(flecs::InOut)
         .term_at(1).self()
+        .read<GPUTexture>()
         .kind(flecs::OnStart)
         .run(prepare_materials);
 
@@ -653,9 +709,14 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
 export void destroy_vulkan(const flecs::world& world) {
     RenderContext* context = world.get_mut<RenderContext>();
 
-    context->device.destroy_texture_view(context->board_texture_view);
-    context->device.destroy_texture(context->board_texture);
-    context->device.destroy_sampler(context->linear_sampler);
+    world.query<GPUTexture>().each([&](const GPUTexture& texture) {
+        context->device.destroy_texture_view(texture.view);
+        context->device.destroy_texture(texture.texture);
+    });
+    world.query<GPUSampler>().each([&](const GPUSampler& sampler) {
+        context->device.destroy_sampler(sampler.sampler);
+    });
+
     context->device.destroy_texture_view(context->depth_texture_view);
     context->device.destroy_texture(context->depth_texture);
     context->device.destroy_buffer(context->joint_buffer);
