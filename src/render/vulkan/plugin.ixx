@@ -31,6 +31,10 @@ struct ViewUniform {
     glm::vec4 position;
 };
 
+export struct Camera {
+    glm::mat4 projection;
+};
+
 struct GPUMesh {
     uint32_t vertex_count;
     uint32_t vertex_offset;
@@ -501,6 +505,26 @@ void prepare_sampler(flecs::entity entity, RenderContext& context, const CPUSamp
     });
 }
 
+void prepare_view(RenderContext& context, const Camera& camera, const GlobalTransform& transform) {
+    const ViewUniform view {
+        .projection = camera.projection,
+        .view = glm::inverse(transform.transform),
+        .position = transform.transform[3]
+    };
+
+    if (context.view_buffer.buffer == VK_NULL_HANDLE) {
+        context.view_buffer = context.device.create_buffer(BufferDescriptor {
+            .size = sizeof(ViewUniform),
+            .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
+        }).unwrap();
+        context.view_buffer_index = context.device.add_binding(context.view_buffer);
+    }
+
+    void* data = context.device.map_buffer(context.view_buffer);
+    memcpy(data, &view, sizeof(ViewUniform));
+    context.device.unmap_buffer(context.view_buffer);
+}
+
 export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
     Instance instance{};
     if (const auto res = instance.initialize(InstanceDescriptor{
@@ -592,23 +616,6 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
     world.component<Material>().add(flecs::OnInstantiate, flecs::Inherit);
     world.component<DynamicUniformIndex<Material>>().add(flecs::OnInstantiate, flecs::Inherit);
 
-    float aspect_ratio = static_cast<float>(window->width) / static_cast<float>(window->height);
-    ViewUniform view {
-        .projection = glm::perspectiveLH(glm::radians(60.0f), aspect_ratio, 10000.0f, 0.01f),
-        .view = glm::lookAtLH(glm::vec3(5.0f, 5.0f, 5.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f)),
-        .position = glm::vec4(5.0f, 5.0f, 5.0f, 1.0f)
-    };
-    Buffer view_buffer = device.create_buffer(BufferDescriptor {
-        .size = sizeof(ViewUniform),
-        .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
-    }).unwrap();
-    uint32_t view_buffer_index = device.add_binding(view_buffer);
-    {
-        void* data = device.map_buffer(view_buffer);
-        memcpy(data, &view, sizeof(ViewUniform));
-        device.unmap_buffer(view_buffer);
-    }
-
     Texture depth_texture = device.create_texture(TextureDescriptor {
         .size = Extent3d {
             .width = window->width,
@@ -651,10 +658,8 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         .swapchain_semaphore = swapchain_semaphore,
         .render_semaphore = render_semaphore,
         .pipeline = pipeline,
-        .view_buffer = view_buffer,
         .depth_texture = depth_texture,
         .depth_texture_view = depth_texture_view,
-        .view_buffer_index = view_buffer_index
     };
     world.set(context);
 
@@ -702,6 +707,11 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         .term_at(0).singleton().inout(flecs::InOut)
         .kind(flecs::OnStart)
         .run(prepare_lights);
+
+    world.system<RenderContext, const Camera, const GlobalTransform>("Prepare View")
+        .term_at(0).singleton().inout(flecs::InOut)
+        .kind(flecs::PreStore)
+        .each(prepare_view);
 
     return Ok();
 }

@@ -10,14 +10,17 @@ module;
 export module stellar.window;
 
 import stellar.core.result;
+import stellar.input.keyboard;
 
+constexpr Key map_key(WPARAM wparam);
 LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 export struct Window {
-    HWND hwnd;
-    HINSTANCE hinstance;
-    uint32_t width;
-    uint32_t height;
+    HWND hwnd{};
+    HINSTANCE hinstance{};
+    uint32_t width{};
+    uint32_t height{};
+    flecs::entity entity;
 
     Window() = default;
     Window(const Window&) = delete;
@@ -78,12 +81,14 @@ void poll_window(flecs::iter& it) {
 }
 
 export Result<void, std::string> initialize_window(const flecs::world& world, const uint32_t width, const uint32_t height) {
-    Window window{};
-    if (const auto res = window.initialize(width, height); res.is_err()) {
+    flecs::entity entity = world.entity<Window>().set<Window>({});
+    Window* window = entity.get_mut<Window>();
+    window->entity = entity;
+
+    if (const auto res = window->initialize(width, height); res.is_err()) {
         return res;
     }
 
-    world.set(window);
     world.system<Window>("Window Events")
         .term_at(0).singleton()
         .kind(flecs::PreUpdate)
@@ -96,17 +101,36 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     auto* window = reinterpret_cast<Window*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
 
     switch (msg) {
-    case WM_CREATE: {
-        auto create_struct = reinterpret_cast<LPCREATESTRUCT>(lParam);
-        SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create_struct->lpCreateParams));
-        return 0;
+        case WM_CREATE: {
+            auto create_struct = reinterpret_cast<LPCREATESTRUCT>(lParam);
+            SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create_struct->lpCreateParams));
+            return 0;
+        }
+        case WM_DESTROY: {
+            PostQuitMessage(0);
+            return 0;
+        }
+        case WM_KEYDOWN: {
+            const Key key = map_key(wParam);
+            window->entity.world().event<KeyboardEvent>().id<Window>().ctx(KeyboardEvent { .key = key, .state = KeyState::Pressed }).entity(window->entity).emit();
+        }
+        default: {
+            return DefWindowProc(hwnd, msg, wParam, lParam);
+        }
     }
-    case WM_DESTROY: {
-        PostQuitMessage(0);
-        return 0;
-    }
-    default: {
-        return DefWindowProc(hwnd, msg, wParam, lParam);
-    }
+}
+
+constexpr Key map_key(const WPARAM wparam) {
+    switch (wparam) {
+        case 0x41:
+            return Key::KeyA;
+        case 0x44:
+            return Key::KeyD;
+        case 0x53:
+            return Key::KeyS;
+        case 0x57:
+            return Key::KeyW;
+        default:
+            return Key::Unknown;
     }
 }

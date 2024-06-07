@@ -1,5 +1,6 @@
 #pragma once
 
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/gtx/quaternion.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 #include "ecs/ecs.hpp"
@@ -13,6 +14,7 @@ import stellar.assets.gltf;
 import stellar.animation;
 import stellar.scene.transform;
 import stellar.core.result;
+import stellar.input.keyboard;
 
 struct App {
     flecs::world world{};
@@ -29,6 +31,38 @@ struct App {
             .color = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f),
             .position = glm::vec4(0.0, 2.0, 2.0, 1.0)
         });
+        flecs::entity camera_entity = world.entity("Camera")
+            .set<Camera>(Camera {
+                .projection = glm::perspectiveLH(glm::radians(60.0f), 1280.0f / 960.0f, 10000.0f, 0.01f)
+            })
+            .set<Transform>(Transform {
+                .translation = glm::vec3(-5.0, 5.0, 0.0),
+                .rotation = glm::quatLookAtLH(glm::normalize(glm::vec3(5.0, -5.0, 0.0)), glm::vec3(0.0, 1.0, 0.0)),
+                .scale = glm::vec3(1.0, 1.0, 1.0)
+            });
+
+        world.observer<Window>()
+            .term_at(0).singleton()
+            .event<KeyboardEvent>()
+            .each([=](flecs::iter& it, size_t i, Window& window) {
+                KeyboardEvent* event = static_cast<KeyboardEvent*>(it.param());
+                it.world().event<KeyboardEvent>().id<Camera>().ctx(*event).entity(camera_entity).emit();
+            });
+
+        world.observer<Camera, Transform>()
+            .event<KeyboardEvent>()
+            .each([](flecs::iter& it, size_t i, Camera& camera, Transform& transform) {
+                KeyboardEvent* event = static_cast<KeyboardEvent*>(it.param());
+                if (event->key == Key::KeyW) {
+                    transform.translation.x += 0.1f;
+                } else if (event->key == Key::KeyS) {
+                    transform.translation.x -= 0.1f;
+                } else if (event->key == Key::KeyA) {
+                    transform.translation.z -= 0.1f;
+                } else if (event->key == Key::KeyD) {
+                    transform.translation.z += 0.1f;
+                }
+            });
 
         std::vector<flecs::entity> materials;
         std::vector<flecs::entity> meshes;

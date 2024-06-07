@@ -54,6 +54,7 @@ target_sources(StellarEngine PUBLIC FILE_SET all_modules TYPE CXX_MODULES FILES
     "src/assets/gltf_loader.ixx"
     "src/animation/animation.ixx"
     "src/scene/transform.ixx"
+	"src/input/keyboard.ixx"
 )
 target_link_libraries(StellarEngine PRIVATE Vulkan::Vulkan glm flecs::flecs_static GPUOpen::VulkanMemoryAllocator fastgltf dxcompiler.lib)
 target_include_directories(StellarEngine PRIVATE "src" "thirdparty")
