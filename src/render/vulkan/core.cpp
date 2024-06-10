@@ -222,6 +222,8 @@ Result<void, VkResult> CommandEncoder::begin_encoding() {
     const std::array descriptor_sets { bindless_buffer_set, bindless_texture_set, bindless_sampler_set };
     vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bindless_pipeline_layout, 0, descriptor_sets.size(),
                             descriptor_sets.data(), 0, nullptr);
+    vkCmdBindDescriptorSets(buffer, VK_PIPELINE_BIND_POINT_COMPUTE, bindless_pipeline_layout, 0, descriptor_sets.size(),
+                            descriptor_sets.data(), 0, nullptr);
 
     active = buffer;
     return Ok();
@@ -424,6 +426,10 @@ void CommandEncoder::draw(const uint32_t vertex_count, const uint32_t instance_c
 void CommandEncoder::draw_indexed(const uint32_t index_count, const uint32_t instance_count, const uint32_t first_index,
                                   const uint32_t vertex_offset, const uint32_t first_instance) const {
     vkCmdDrawIndexed(active, index_count, instance_count, first_index, vertex_offset, first_instance);
+}
+
+void CommandEncoder::dispatch(uint32_t x, uint32_t y, uint32_t z) const {
+    vkCmdDispatch(active, x, y, z);
 }
 
 void CommandEncoder::end_render_pass() const {
@@ -834,7 +840,7 @@ void Device::destroy_buffer(const Buffer& buffer) const {
     vmaDestroyBuffer(allocator, buffer.buffer, buffer.allocation);
 }
 
-Result<Pipeline, VkResult> Device::create_graphics_pipeline(const PipelineDescriptor& descriptor) const {
+Result<Pipeline, VkResult> Device::create_graphics_pipeline(const RenderPipelineDescriptor& descriptor) const {
     VkPipelineShaderStageCreateInfo vertex_stage{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
     vertex_stage.stage = VK_SHADER_STAGE_VERTEX_BIT;
     vertex_stage.module = descriptor.vertex_shader->module;
@@ -939,6 +945,25 @@ Result<Pipeline, VkResult> Device::create_graphics_pipeline(const PipelineDescri
     pipeline.bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
     if (const auto res = vkCreateGraphicsPipelines(device, nullptr, 1, &create_info, nullptr, &pipeline.pipeline); res
         != VK_SUCCESS) {
+        return Err(res);
+    }
+
+    return Ok(pipeline);
+}
+
+Result<Pipeline, VkResult> Device::create_compute_pipeline(const ComputePipelineDescriptor &descriptor) const {
+    VkPipelineShaderStageCreateInfo shader_info { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
+    shader_info.module = descriptor.compute_shader->module;
+    shader_info.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    shader_info.pName = descriptor.compute_shader->entrypoint.c_str();
+
+    VkComputePipelineCreateInfo create_info { .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+    create_info.layout = bindless_pipeline_layout;
+    create_info.stage = shader_info;
+
+    Pipeline pipeline{};
+    pipeline.bind_point = VK_PIPELINE_BIND_POINT_COMPUTE;
+    if (const auto res = vkCreateComputePipelines(device, nullptr, 1, &create_info, nullptr, &pipeline.pipeline); res != VK_SUCCESS) {
         return Err(res);
     }
 

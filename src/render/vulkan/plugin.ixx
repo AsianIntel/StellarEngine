@@ -7,7 +7,6 @@ module;
 #include <fstream>
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/mat4x4.hpp>
-#include <glm/ext/matrix_clip_space.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/packing.hpp>
 #include <iostream>
@@ -104,7 +103,9 @@ struct RenderContext {
     Semaphore swapchain_semaphore{};
     Semaphore render_semaphore{};
 
-    Pipeline pipeline{};
+    Pipeline mesh_pipeline{};
+    Pipeline skinning_pipeline{};
+
     Buffer vertex_buffer{};
     Buffer index_buffer{};
     Buffer view_buffer{};
@@ -112,6 +113,7 @@ struct RenderContext {
     Buffer transform_buffer{};
     Buffer light_buffer{};
     Buffer joint_buffer{};
+    Buffer post_skinning_buffer{};
     Texture depth_texture{};
     TextureView depth_texture_view{};
 
@@ -121,19 +123,62 @@ struct RenderContext {
     uint32_t transform_buffer_index{};
     uint32_t light_buffer_index{};
     uint32_t joint_buffer_index{};
+    uint32_t post_skinning_buffer_index{};
+
+    //TODO: Figure a better way to share this
+    SurfaceTexture surface_texture{};
 };
 
-void render(flecs::iter& it) {
+void begin_render(RenderContext& context) {
+    context.surface_texture = context.surface.acquire_texture(context.swapchain_semaphore).unwrap();
+    context.encoder.begin_encoding().unwrap();
+}
+
+void end_render(RenderContext& context) {
+    auto command_buffer = context.encoder.end_encoding().unwrap();
+
+    std::array wait_semaphores { context.swapchain_semaphore };
+    std::array signal_semaphores { context.render_semaphore };
+    std::array command_buffers { command_buffer };
+    context.queue.submit(command_buffers, wait_semaphores, signal_semaphores, context.render_fence).unwrap();
+
+    // TODO: Check for window closure
+    auto _ = context.queue.present(context.surface, context.surface_texture, signal_semaphores);
+    context.device.wait_for_fence(context.render_fence).unwrap();
+    context.encoder.reset_all(command_buffers);
+}
+
+void skin_meshes(flecs::iter& it) {
     if (!it.next()) return;
     auto context = it.field<RenderContext>(0);
-    
-    SurfaceTexture surface_texture = context->surface.acquire_texture(context->swapchain_semaphore).unwrap();
-    context->encoder.begin_encoding().unwrap();
+
+    context->encoder.bind_pipeline(context->skinning_pipeline);
+    do {
+        auto mesh = it.field<GPUMesh>(1);
+
+        for (const auto i: it) {
+            std::array push_constants {
+                mesh[i].vertex_count,
+                context->vertex_buffer_index,
+                mesh[i].vertex_offset,
+                context->joint_buffer_index,
+                0u,
+                context->post_skinning_buffer_index
+            };
+            context->encoder.set_push_constants(push_constants);
+            context->encoder.dispatch(std::ceil(static_cast<float>(mesh[i].vertex_count) / 128.0f), 1, 1);
+        }
+    } while(it.next());
+}
+
+void render_meshes(flecs::iter& it) {
+    if (!it.next()) return;
+    auto context = it.field<RenderContext>(0);
 
     {
         std::array barriers {
             TextureBarrier {
-                .texture = &surface_texture.texture,
+                .texture = &context->surface_texture.texture,
                 .range = ImageSubresourceRange {
                     .aspect = FormatAspect::Color,
                     .base_mip_level = 0,
@@ -150,7 +195,7 @@ void render(flecs::iter& it) {
 
     std::array color_attachments {
         ColorAttachment {
-            .target = Attachment { .view = &surface_texture.view },
+            .target = Attachment { .view = &context->surface_texture.view },
             .ops = AttachmentOps::Store,
             .clear = Color { 0.0, 0.0, 0.0, 1.0 }
         }
@@ -166,7 +211,7 @@ void render(flecs::iter& it) {
         .depth_attachment = depth_attachment
     });
 
-    context->encoder.bind_pipeline(context->pipeline);
+    context->encoder.bind_pipeline(context->mesh_pipeline);
     context->encoder.bind_index_buffer(context->index_buffer);
 
     do {
@@ -176,7 +221,7 @@ void render(flecs::iter& it) {
 
         for (const auto i: it) {
             std::array push_constants {
-                context->vertex_buffer_index,
+                context->post_skinning_buffer_index,
                 mesh[i].vertex_offset,
                 context->view_buffer_index,
                 context->material_buffer_index,
@@ -201,7 +246,7 @@ void render(flecs::iter& it) {
     {
         std::array barriers {
             TextureBarrier {
-                .texture = &surface_texture.texture,
+                .texture = &context->surface_texture.texture,
                 .range = ImageSubresourceRange {
                     .aspect = FormatAspect::Color,
                     .base_mip_level = 0,
@@ -215,18 +260,6 @@ void render(flecs::iter& it) {
         };
         context->encoder.transition_textures(barriers);
     }
-    
-    auto command_buffer = context->encoder.end_encoding().unwrap();
-
-    std::array wait_semaphores { context->swapchain_semaphore };
-    std::array signal_semaphores { context->render_semaphore };
-    std::array command_buffers { command_buffer };
-    context->queue.submit(command_buffers, wait_semaphores, signal_semaphores, context->render_fence).unwrap();
-
-    // TODO: Check for window closure
-    auto _ = context->queue.present(context->surface, surface_texture, signal_semaphores);
-    context->device.wait_for_fence(context->render_fence).unwrap();
-    context->encoder.reset_all(command_buffers);
 }
 
 void prepare_meshes(flecs::iter& it) {
@@ -265,6 +298,12 @@ void prepare_meshes(flecs::iter& it) {
         context->device.unmap_buffer(context->vertex_buffer);
     }
     context->vertex_buffer_index = context->device.add_binding(context->vertex_buffer);
+
+    context->post_skinning_buffer = context->device.create_buffer(BufferDescriptor {
+        .size = all_vertices.size() * sizeof(Vertex),
+        .usage = BufferUsage::Storage
+    }).unwrap();
+    context->post_skinning_buffer_index = context->device.add_binding(context->post_skinning_buffer);
 
     context->index_buffer = context->device.create_buffer(BufferDescriptor {
         .size = all_indices.size() * sizeof(uint32_t),
@@ -585,19 +624,26 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
     }
     Semaphore render_semaphore = semaphore_res.unwrap();
 
-    auto shader_file = read_file("../../assets/shaders/mesh.hlsl");
+    auto mesh_file = read_file("../../assets/shaders/mesh.hlsl");
     ShaderModule vertex_shader = device.create_shader_module(ShaderModuleDescriptor {
-        .code = shader_file,
+        .code = mesh_file,
         .entrypoint = "VSMain",
         .stage = ShaderStage::Vertex
     }).unwrap();
     ShaderModule fragment_shader = device.create_shader_module(ShaderModuleDescriptor {
-        .code = shader_file,
+        .code = mesh_file,
         .entrypoint = "PSMain",
         .stage = ShaderStage::Fragment
     }).unwrap();
 
-    Pipeline pipeline = device.create_graphics_pipeline(PipelineDescriptor{
+    auto skinning_file = read_file("../../assets/shaders/skinning.hlsl");
+    ShaderModule skinning_shader = device.create_shader_module(ShaderModuleDescriptor {
+        .code = skinning_file,
+        .entrypoint = "cs_skinning",
+        .stage = ShaderStage::Compute
+    }).unwrap();
+
+    Pipeline mesh_pipeline = device.create_graphics_pipeline(RenderPipelineDescriptor{
         .vertex_shader = &vertex_shader,
         .fragment_shader = &fragment_shader,
         .render_format = TextureFormat::Rgba8Unorm,
@@ -607,9 +653,13 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
             .compare = CompareFunction::GreaterEqual
         }
     }).unwrap();
+    Pipeline skinning_pipeline = device.create_compute_pipeline(ComputePipelineDescriptor {
+        .compute_shader = &skinning_shader
+    }).unwrap();
 
     device.destroy_shader_module(vertex_shader);
     device.destroy_shader_module(fragment_shader);
+    device.destroy_shader_module(skinning_shader);
 
     world.component<Mesh>().add(flecs::OnInstantiate, flecs::Inherit);
     world.component<GPUMesh>().add(flecs::OnInstantiate, flecs::Inherit);
@@ -643,7 +693,7 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
     Extent3d extent {
         .width = window->width,
         .height = window->height,
-        .depth_or_array_layers = 1 
+        .depth_or_array_layers = 1
     };
 
     RenderContext context{
@@ -657,16 +707,12 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         .render_fence = render_fence,
         .swapchain_semaphore = swapchain_semaphore,
         .render_semaphore = render_semaphore,
-        .pipeline = pipeline,
+        .mesh_pipeline = mesh_pipeline,
+        .skinning_pipeline = skinning_pipeline,
         .depth_texture = depth_texture,
         .depth_texture_view = depth_texture_view,
     };
     world.set(context);
-
-    world.system<RenderContext, GPUMesh, DynamicUniformIndex<Material>, DynamicUniformIndex<GlobalTransform>>("Render")
-        .term_at(0).singleton().inout(flecs::InOut)
-        .kind(flecs::OnStore)
-        .run(render);
 
     world.system<RenderContext, Mesh>("Prepare Meshes")
         .term_at(0).singleton().inout(flecs::InOut)
@@ -690,12 +736,14 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         .term_at(0).singleton().inout(flecs::InOut)
         .term_at(1).self()
         .read<GPUTexture>()
+        .write<DynamicUniformIndex<Material>>()
         .kind(flecs::OnStart)
         .run(prepare_materials);
 
     world.system<RenderContext, GlobalTransform>("Prepare Transforms")
         .term_at(0).singleton().inout(flecs::InOut)
         .kind(flecs::PreStore)
+        .write<DynamicUniformIndex<GlobalTransform>>()
         .run(prepare_transforms);
 
     world.system<RenderContext, Joint, GlobalTransform>("Prepare Joints")
@@ -713,6 +761,31 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         .kind(flecs::PreStore)
         .each(prepare_view);
 
+    auto begin_render_system = world.system<RenderContext>("Begin Render")
+        .term_at(0).singleton().inout(flecs::InOut)
+        .kind(flecs::OnStore)
+        .each(begin_render);
+
+    auto skin_mesh_system = world.system<RenderContext, GPUMesh>("Skin Meshes")
+        .term_at(0).singleton().inout(flecs::InOut)
+        .kind(flecs::OnStore)
+        .with<DynamicUniformIndex<GlobalTransform>>()
+        .run(skin_meshes);
+
+    auto render_mesh_system = world.system<RenderContext, GPUMesh, DynamicUniformIndex<Material>, DynamicUniformIndex<GlobalTransform>>("Render Meshes")
+        .term_at(0).singleton().inout(flecs::InOut)
+        .kind(flecs::OnStore)
+        .run(render_meshes);
+
+    auto end_render_system = world.system<RenderContext>("End Render")
+        .term_at(0).singleton().inout(flecs::InOut)
+        .kind(flecs::OnStore)
+        .each(end_render);
+
+    skin_mesh_system.depends_on(begin_render_system);
+    render_mesh_system.depends_on(skin_mesh_system);
+    end_render_system.depends_on(render_mesh_system);
+
     return Ok();
 }
 
@@ -729,6 +802,7 @@ export void destroy_vulkan(const flecs::world& world) {
 
     context->device.destroy_texture_view(context->depth_texture_view);
     context->device.destroy_texture(context->depth_texture);
+    context->device.destroy_buffer(context->post_skinning_buffer);
     context->device.destroy_buffer(context->joint_buffer);
     context->device.destroy_buffer(context->light_buffer);
     context->device.destroy_buffer(context->transform_buffer);
@@ -736,7 +810,8 @@ export void destroy_vulkan(const flecs::world& world) {
     context->device.destroy_buffer(context->view_buffer);
     context->device.destroy_buffer(context->index_buffer);
     context->device.destroy_buffer(context->vertex_buffer);
-    context->device.destroy_pipeline(context->pipeline);
+    context->device.destroy_pipeline(context->skinning_pipeline);
+    context->device.destroy_pipeline(context->mesh_pipeline);
     context->device.destroy_semaphore(context->render_semaphore);
     context->device.destroy_semaphore(context->swapchain_semaphore);
     context->device.destroy_fence(context->render_fence);

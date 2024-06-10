@@ -87,11 +87,15 @@ export struct BufferDescriptor {
     BufferUsage usage;
 };
 
-export struct PipelineDescriptor {
+export struct RenderPipelineDescriptor {
     ShaderModule* vertex_shader;
     ShaderModule* fragment_shader;
     TextureFormat render_format;
     std::optional<DepthStencilState> depth_stencil;
+};
+
+export struct ComputePipelineDescriptor {
+    ShaderModule* compute_shader;
 };
 
 export struct ShaderModuleDescriptor {
@@ -198,7 +202,8 @@ struct Device {
     void destroy_semaphore(const Semaphore& semaphore) const;
     Result<Buffer, VkResult> create_buffer(const BufferDescriptor& descriptor) const;
     void destroy_buffer(const Buffer& buffer) const;
-    Result<Pipeline, VkResult> create_graphics_pipeline(const PipelineDescriptor& descriptor) const;
+    Result<Pipeline, VkResult> create_graphics_pipeline(const RenderPipelineDescriptor& descriptor) const;
+    Result<Pipeline, VkResult> create_compute_pipeline(const ComputePipelineDescriptor& descriptor) const;
     void destroy_pipeline(const Pipeline& pipeline) const;
     Result<ShaderModule, VkResult> create_shader_module(const ShaderModuleDescriptor& descriptor) const;
     void destroy_shader_module(const ShaderModule& module) const;
@@ -260,6 +265,7 @@ struct CommandEncoder {
     void set_push_constants(const std::span<uint32_t>& push_constants) const;
     void draw(uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex, uint32_t first_instance) const;
     void draw_indexed(uint32_t index_count, uint32_t instance_count, uint32_t first_index, uint32_t vertex_offset, uint32_t first_instance) const;
+    void dispatch(uint32_t x, uint32_t y, uint32_t z) const;
     void end_render_pass() const;
     Result<CommandBuffer, VkResult> end_encoding();
     void reset_all(const std::span<CommandBuffer>& command_buffers);
