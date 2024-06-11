@@ -986,7 +986,7 @@ Result<ShaderModule, VkResult> Device::create_shader_module(const ShaderModuleDe
     case ShaderStage::Compute:
         target = "cs_6_5";
     }
-    auto shader_code = shader_compiler.compile(descriptor.code, descriptor.entrypoint, target);
+    auto shader_code = shader_compiler.compile(descriptor.code, descriptor.entrypoint, target, descriptor.defines);
 
     VkShaderModuleCreateInfo create_info{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     create_info.codeSize = shader_code.size();

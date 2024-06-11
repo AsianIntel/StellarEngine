@@ -41,6 +41,10 @@ struct GPUMesh {
     std::optional<uint32_t> index_offset;
 };
 
+export struct SkinnedMesh {
+    std::vector<flecs::entity> joints;
+};
+
 export struct Material {
     glm::vec4 color;
     flecs::entity color_texture;
@@ -104,9 +108,11 @@ struct RenderContext {
     Semaphore render_semaphore{};
 
     Pipeline mesh_pipeline{};
+    Pipeline skinned_mesh_pipeline{};
     Pipeline skinning_pipeline{};
 
     Buffer vertex_buffer{};
+    Buffer skinned_vertex_buffer{};
     Buffer index_buffer{};
     Buffer view_buffer{};
     Buffer material_buffer{};
@@ -127,6 +133,11 @@ struct RenderContext {
 
     //TODO: Figure a better way to share this
     SurfaceTexture surface_texture{};
+};
+
+struct RenderRunner {
+    flecs::query<GPUMesh, DynamicUniformIndex<Material>, DynamicUniformIndex<GlobalTransform>> mesh_query;
+    flecs::query<GPUMesh, DynamicUniformIndex<Material>, DynamicUniformIndex<GlobalTransform>> skinned_mesh_query;
 };
 
 void begin_render(RenderContext& context) {
@@ -155,6 +166,7 @@ void skin_meshes(flecs::iter& it) {
     context->encoder.bind_pipeline(context->skinning_pipeline);
     do {
         auto mesh = it.field<GPUMesh>(1);
+        auto skinned_mesh = it.field<DynamicUniformIndex<SkinnedMesh>>(2);
 
         for (const auto i: it) {
             std::array push_constants {
@@ -162,7 +174,7 @@ void skin_meshes(flecs::iter& it) {
                 context->vertex_buffer_index,
                 mesh[i].vertex_offset,
                 context->joint_buffer_index,
-                0u,
+                skinned_mesh[i].offset,
                 context->post_skinning_buffer_index
             };
             context->encoder.set_push_constants(push_constants);
@@ -171,14 +183,11 @@ void skin_meshes(flecs::iter& it) {
     } while(it.next());
 }
 
-void render_meshes(flecs::iter& it) {
-    if (!it.next()) return;
-    auto context = it.field<RenderContext>(0);
-
+void render_meshes(RenderContext& context, const RenderRunner& runner) {
     {
         std::array barriers {
             TextureBarrier {
-                .texture = &context->surface_texture.texture,
+                .texture = &context.surface_texture.texture,
                 .range = ImageSubresourceRange {
                     .aspect = FormatAspect::Color,
                     .base_mip_level = 0,
@@ -190,63 +199,96 @@ void render_meshes(flecs::iter& it) {
                 .after = TextureUsage::RenderTarget
             }
         };
-        context->encoder.transition_textures(barriers);
+        context.encoder.transition_textures(barriers);
     }
 
     std::array color_attachments {
         ColorAttachment {
-            .target = Attachment { .view = &context->surface_texture.view },
+            .target = Attachment { .view = &context.surface_texture.view },
             .ops = AttachmentOps::Store,
             .clear = Color { 0.0, 0.0, 0.0, 1.0 }
         }
     };
     DepthAttachment depth_attachment {
-        .target = Attachment { .view = &context->depth_texture_view },
+        .target = Attachment { .view = &context.depth_texture_view },
         .ops = AttachmentOps::Store,
         .depth_clear = 0.0f
     };
-    context->encoder.begin_render_pass(RenderPassDescriptor {
-        .extent = context->extent,
+
+    context.encoder.begin_render_pass(RenderPassDescriptor {
+        .extent = context.extent,
         .color_attachments = color_attachments,
         .depth_attachment = depth_attachment
     });
 
-    context->encoder.bind_pipeline(context->mesh_pipeline);
-    context->encoder.bind_index_buffer(context->index_buffer);
+    runner.mesh_query
+        .run([&](flecs::iter& it) {
+            context.encoder.bind_pipeline(context.mesh_pipeline);
+            context.encoder.bind_index_buffer(context.index_buffer);
 
-    do {
-        auto mesh = it.field<GPUMesh>(1);
-        auto material_index = it.field<DynamicUniformIndex<Material>>(2);
-        auto transform = it.field<DynamicUniformIndex<GlobalTransform>>(3);
-
-        for (const auto i: it) {
-            std::array push_constants {
-                context->post_skinning_buffer_index,
-                mesh[i].vertex_offset,
-                context->view_buffer_index,
-                context->material_buffer_index,
-                material_index[i].offset,
-                context->transform_buffer_index,
-                transform[i].offset,
-                context->light_buffer_index,
-                static_cast<uint32_t>(context->light_buffer.size / sizeof(Light)),
-                context->joint_buffer_index,
-            };
-            context->encoder.set_push_constants(push_constants);
-            if (mesh->index_count.has_value()) {
-                context->encoder.draw_indexed(mesh[i].index_count.value(), 1, mesh[i].index_offset.value(), 0, 0);
-            } else {
-                context->encoder.draw(mesh[i].vertex_count, 1, 0, 0);
+            while (it.next()) {
+                auto mesh = it.field<GPUMesh>(0);
+                auto material_index = it.field<DynamicUniformIndex<Material>>(1);
+                auto transform_index = it.field<DynamicUniformIndex<GlobalTransform>>(2);
+                for (const auto i: it) {
+                    std::array push_constants {
+                        context.vertex_buffer_index,
+                        mesh[i].vertex_offset,
+                        context.view_buffer_index,
+                        context.material_buffer_index,
+                        material_index[i].offset,
+                        context.transform_buffer_index,
+                        transform_index[i].offset,
+                        context.light_buffer_index,
+                        static_cast<uint32_t>(context.light_buffer.size / sizeof(Light)),
+                    };
+                    context.encoder.set_push_constants(push_constants);
+                    if (mesh[i].index_count.has_value()) {
+                        context.encoder.draw_indexed(mesh[i].index_count.value(), 1, mesh[i].index_offset.value(), 0, 0);
+                    } else {
+                        context.encoder.draw(mesh[i].vertex_count, 1, 0, 0);
+                    }
+                }
             }
-        }
-    } while (it.next());
+        });
 
-    context->encoder.end_render_pass();
+    runner.skinned_mesh_query
+        .run([&](flecs::iter& it) {
+            context.encoder.bind_pipeline(context.skinned_mesh_pipeline);
+            context.encoder.bind_index_buffer(context.index_buffer);
+
+            while (it.next()) {
+                auto mesh = it.field<GPUMesh>(0);
+                auto material_index = it.field<DynamicUniformIndex<Material>>(1);
+                auto transform_index = it.field<DynamicUniformIndex<GlobalTransform>>(2);
+                for (const auto i: it) {
+                    std::array push_constants {
+                        context.post_skinning_buffer_index,
+                        mesh[i].vertex_offset,
+                        context.view_buffer_index,
+                        context.material_buffer_index,
+                        material_index[i].offset,
+                        context.transform_buffer_index,
+                        transform_index[i].offset,
+                        context.light_buffer_index,
+                        static_cast<uint32_t>(context.light_buffer.size / sizeof(Light)),
+                    };
+                    context.encoder.set_push_constants(push_constants);
+                    if (mesh[i].index_count.has_value()) {
+                        context.encoder.draw_indexed(mesh[i].index_count.value(), 1, mesh[i].index_offset.value(), 0, 0);
+                    } else {
+                        context.encoder.draw(mesh[i].vertex_count, 1, 0, 0);
+                    }
+                }
+            }
+        });
+
+    context.encoder.end_render_pass();
 
     {
         std::array barriers {
             TextureBarrier {
-                .texture = &context->surface_texture.texture,
+                .texture = &context.surface_texture.texture,
                 .range = ImageSubresourceRange {
                     .aspect = FormatAspect::Color,
                     .base_mip_level = 0,
@@ -258,7 +300,7 @@ void render_meshes(flecs::iter& it) {
                 .after = TextureUsage::Present
             }
         };
-        context->encoder.transition_textures(barriers);
+        context.encoder.transition_textures(barriers);
     }
 }
 
@@ -376,16 +418,23 @@ void prepare_transforms(flecs::iter& it) {
     }
 }
 
-void prepare_joints(flecs::iter& it) {
-    std::vector<glm::mat4> all_joints(100);
+void prepare_skinned_meshes(flecs::iter& it) {
+    std::vector<glm::mat4> all_joints;
 
     if (!it.next()) return;
     auto context = it.field<RenderContext>(0);
     do {
-        auto joint = it.field<Joint>(1);
-        auto transform = it.field<GlobalTransform>(2);
+        auto mesh = it.field<SkinnedMesh>(1);
         for (const auto i: it) {
-            all_joints[joint[i].buffer_offset] = transform[i].transform * joint[i].inverse_bind;
+            uint32_t initial_joint = all_joints.size();
+            const std::vector<flecs::entity>& mesh_joints = mesh[i].joints;
+            all_joints.resize(all_joints.size() + mesh_joints.size());
+            for (uint32_t j = 0; j < mesh_joints.size(); j++) {
+                const Joint* joint = mesh_joints[j].get<Joint>();
+                const GlobalTransform* transform = mesh_joints[j].get<GlobalTransform>();
+                all_joints[initial_joint + joint->buffer_offset] = transform->transform * joint->inverse_bind;
+            }
+            it.entity(i).set<DynamicUniformIndex<SkinnedMesh>>({ initial_joint });
         }
     } while (it.next());
 
@@ -630,6 +679,12 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         .entrypoint = "VSMain",
         .stage = ShaderStage::Vertex
     }).unwrap();
+    ShaderModule skinned_vertex_shader = device.create_shader_module(ShaderModuleDescriptor {
+        .code = mesh_file,
+        .entrypoint = "VSMain",
+        .stage = ShaderStage::Vertex,
+        .defines = { "MESH_SKINNING" }
+    }).unwrap();
     ShaderModule fragment_shader = device.create_shader_module(ShaderModuleDescriptor {
         .code = mesh_file,
         .entrypoint = "PSMain",
@@ -653,11 +708,22 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
             .compare = CompareFunction::GreaterEqual
         }
     }).unwrap();
+    Pipeline skinned_mesh_pipeline = device.create_graphics_pipeline(RenderPipelineDescriptor{
+        .vertex_shader = &skinned_vertex_shader,
+        .fragment_shader = &fragment_shader,
+        .render_format = TextureFormat::Rgba8Unorm,
+        .depth_stencil = DepthStencilState {
+            .format = TextureFormat::D32,
+            .depth_write_enabled = true,
+            .compare = CompareFunction::GreaterEqual
+        }
+    }).unwrap();
     Pipeline skinning_pipeline = device.create_compute_pipeline(ComputePipelineDescriptor {
         .compute_shader = &skinning_shader
     }).unwrap();
 
     device.destroy_shader_module(vertex_shader);
+    device.destroy_shader_module(skinned_vertex_shader);
     device.destroy_shader_module(fragment_shader);
     device.destroy_shader_module(skinning_shader);
 
@@ -708,11 +774,17 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         .swapchain_semaphore = swapchain_semaphore,
         .render_semaphore = render_semaphore,
         .mesh_pipeline = mesh_pipeline,
+        .skinned_mesh_pipeline = skinned_mesh_pipeline,
         .skinning_pipeline = skinning_pipeline,
         .depth_texture = depth_texture,
         .depth_texture_view = depth_texture_view,
     };
     world.set(context);
+
+    RenderRunner runner {};
+    runner.mesh_query = world.query_builder<GPUMesh, DynamicUniformIndex<Material>, DynamicUniformIndex<GlobalTransform>>().without<SkinnedMesh>().build();
+    runner.skinned_mesh_query = world.query_builder<GPUMesh, DynamicUniformIndex<Material>, DynamicUniformIndex<GlobalTransform>>().with<SkinnedMesh>().build();
+    world.set(runner);
 
     world.system<RenderContext, Mesh>("Prepare Meshes")
         .term_at(0).singleton().inout(flecs::InOut)
@@ -746,10 +818,11 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         .write<DynamicUniformIndex<GlobalTransform>>()
         .run(prepare_transforms);
 
-    world.system<RenderContext, Joint, GlobalTransform>("Prepare Joints")
+    world.system<RenderContext, SkinnedMesh>("Prepare Skinned Meshes")
         .term_at(0).singleton().inout(flecs::InOut)
         .kind(flecs::PreStore)
-        .run(prepare_joints);
+        .write<DynamicUniformIndex<SkinnedMesh>>()
+        .run(prepare_skinned_meshes);
 
     world.system<RenderContext, Light>("Prepare Lights")
         .term_at(0).singleton().inout(flecs::InOut)
@@ -766,16 +839,16 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         .kind(flecs::OnStore)
         .each(begin_render);
 
-    auto skin_mesh_system = world.system<RenderContext, GPUMesh>("Skin Meshes")
+    auto skin_mesh_system = world.system<RenderContext, GPUMesh, DynamicUniformIndex<SkinnedMesh>>("Skin Meshes")
         .term_at(0).singleton().inout(flecs::InOut)
         .kind(flecs::OnStore)
-        .with<DynamicUniformIndex<GlobalTransform>>()
         .run(skin_meshes);
 
-    auto render_mesh_system = world.system<RenderContext, GPUMesh, DynamicUniformIndex<Material>, DynamicUniformIndex<GlobalTransform>>("Render Meshes")
+    auto render_mesh_system = world.system<RenderContext, RenderRunner>("Render Meshes")
         .term_at(0).singleton().inout(flecs::InOut)
+        .term_at(1).singleton()
         .kind(flecs::OnStore)
-        .run(render_meshes);
+        .each(render_meshes);
 
     auto end_render_system = world.system<RenderContext>("End Render")
         .term_at(0).singleton().inout(flecs::InOut)
@@ -811,6 +884,7 @@ export void destroy_vulkan(const flecs::world& world) {
     context->device.destroy_buffer(context->index_buffer);
     context->device.destroy_buffer(context->vertex_buffer);
     context->device.destroy_pipeline(context->skinning_pipeline);
+    context->device.destroy_pipeline(context->skinned_mesh_pipeline);
     context->device.destroy_pipeline(context->mesh_pipeline);
     context->device.destroy_semaphore(context->render_semaphore);
     context->device.destroy_semaphore(context->swapchain_semaphore);

@@ -6,6 +6,7 @@
 #include "ecs/ecs.hpp"
 #include <optional>
 #include <vector>
+#include <unordered_map>
 
 import stellar.render.vulkan.plugin;
 import stellar.window;
@@ -89,8 +90,28 @@ struct App {
             flecs::entity entity = world.entity().set<Mesh>(mesh.mesh);
             meshes.push_back(entity);
         }
+
+        {
+            flecs::entity cube_mesh = world.entity().set<Mesh>(cube(1.0f));
+            world.entity("Cube")
+                .is_a(cube_mesh)
+                .is_a(materials[0])
+                .set<Transform>(Transform {
+                    .translation = glm::vec3(2.0, 0.0, 2.0),
+                    .rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+                    .scale = glm::vec3(1.0, 1.0, 1.0f)
+                });
+        }
+
+        std::vector<flecs::entity> joints;
+        std::unordered_map<flecs::entity, uint32_t> entity_to_skin;
         for (const auto& index: gltf.top_nodes) {
-            spawn_node(gltf, index, std::nullopt, materials, meshes);
+            spawn_node(gltf, index, std::nullopt, materials, meshes, joints, entity_to_skin);
+        }
+        for (std::pair<flecs::entity, uint32_t> it: entity_to_skin) {
+            it.first.set<SkinnedMesh>(SkinnedMesh {
+                .joints = joints
+            });
         }
 
         flecs::entity animation = world.entity().set<AnimationClip>(gltf.animations[0]);
@@ -112,7 +133,15 @@ struct App {
         destroy_vulkan(world);
     }
 
-    void spawn_node(Gltf& gltf, uint32_t index, const std::optional<flecs::entity>& parent, const std::vector<flecs::entity>& materials, const std::vector<flecs::entity>& meshes) {
+    void spawn_node(
+        Gltf& gltf,
+        uint32_t index,
+        const std::optional<flecs::entity>& parent,
+        const std::vector<flecs::entity>& materials,
+        const std::vector<flecs::entity>& meshes,
+        std::vector<flecs::entity>& joints,
+        std::unordered_map<flecs::entity, uint32_t>& entity_to_skin
+    ) {
         GltfNode& node = gltf.nodes[index];
         flecs::entity entity = world.entity();
         if (node.mesh.has_value()) {
@@ -122,6 +151,10 @@ struct App {
         if (node.joint.has_value()) {
             GltfJoint& joint = gltf.joints[node.joint.value()];
             entity.set(joint.joint);
+            joints.push_back(entity);
+        }
+        if (node.skin.has_value()) {
+            entity_to_skin.insert({ entity, node.skin.value() });
         }
         
         if (parent.has_value()) {
@@ -130,7 +163,7 @@ struct App {
         
         entity.set<Transform>(node.transform).set<AnimationTarget>(AnimationTarget { index });
         for (const auto& c: node.children) {
-            spawn_node(gltf, c, entity, materials, meshes);
+            spawn_node(gltf, c, entity, materials, meshes, joints, entity_to_skin);
         }
     }
 };

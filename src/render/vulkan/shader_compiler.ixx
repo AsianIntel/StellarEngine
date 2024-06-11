@@ -38,7 +38,7 @@ export struct ShaderCompiler {
         return Ok();
     }
 
-    [[nodiscard]] std::vector<uint8_t> compile(std::string_view source, std::string_view entrypoint, std::string_view target) const {
+    [[nodiscard]] std::vector<uint8_t> compile(std::string_view source, std::string_view entrypoint, std::string_view target, const std::vector<std::string>& defines) const {
         ComPtr<IDxcBlobEncoding> source_blob;
         utils->CreateBlob(source.data(), source.size(), CP_UTF8, source_blob.GetAddressOf());
 
@@ -52,6 +52,15 @@ export struct ShaderCompiler {
         arguments.push_back(L"-spirv");
         arguments.push_back(DXC_ARG_WARNINGS_ARE_ERRORS);
         arguments.push_back(DXC_ARG_DEBUG);
+
+        std::vector<std::wstring> w_defines;
+        for (const auto& define: defines) {
+            w_defines.push_back(std::wstring(define.begin(), define.end()));
+        }
+        for (const auto& define: w_defines) {
+            arguments.push_back(L"-D");
+            arguments.push_back(define.c_str());
+        }
 
         DxcBuffer source_buffer {
             .Ptr = source_blob->GetBufferPointer(),

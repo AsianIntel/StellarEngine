@@ -60,6 +60,10 @@ PSInput VSMain(uint vertex_id: SV_VertexId) {
     Material material = bindless_buffers[push_constants.material_buffer_index].Load<Material>(push_constants.material_buffer_offset * 16);
     Transform transform = bindless_buffers[push_constants.transform_buffer_index].Load<Transform>(push_constants.transform_buffer_offset * 64);
 
+#ifndef MESH_SKINNING
+	vertex.position = mul(transform.transform, vertex.position);
+#endif
+
     float4 frag_pos = vertex.position;
     vertex.position = mul(view.view, vertex.position);
     vertex.position = mul(view.projection, vertex.position);

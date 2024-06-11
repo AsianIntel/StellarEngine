@@ -31,6 +31,7 @@ export struct GltfMesh {
 export struct GltfNode {
     std::optional<uint32_t> mesh;
     std::optional<uint32_t> joint;
+    std::optional<uint32_t> skin;
     Transform transform;
     std::vector<uint32_t> children;
     std::optional<uint32_t> parent;
@@ -303,6 +304,9 @@ export Result<Gltf, std::string> load_gltf(std::filesystem::path file_path) {
         GltfNode& node = nodes.emplace_back();
         if (gltf.nodes[i].meshIndex.has_value()) {
             node.mesh = gltf.nodes[i].meshIndex.value();
+        }
+        if (gltf.nodes[i].skinIndex.has_value()) {
+            node.skin = gltf.nodes[i].skinIndex.value();
         }
 
         std::visit(

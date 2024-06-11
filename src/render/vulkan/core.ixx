@@ -102,6 +102,7 @@ export struct ShaderModuleDescriptor {
     std::string_view code;
     std::string entrypoint;
     ShaderStage stage;
+    std::vector<std::string> defines;
 };
 
 export struct TextureDescriptor {
