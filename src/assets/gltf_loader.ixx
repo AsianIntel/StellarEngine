@@ -49,8 +49,8 @@ export struct GltfSampler {
 
 export struct GltfMaterial {
     glm::vec4 color;
-    uint32_t color_texture_index;
-    uint32_t color_sampler_index;
+    std::optional<uint32_t> color_texture_index;
+    std::optional<uint32_t> color_sampler_index;
 };
 
 export struct Gltf {
@@ -221,8 +221,10 @@ export Result<Gltf, std::string> load_gltf(std::filesystem::path file_path) {
         material.color[1] = mat.pbrData.baseColorFactor[1];
         material.color[2] = mat.pbrData.baseColorFactor[2];
         material.color[3] = mat.pbrData.baseColorFactor[3];
-        material.color_texture_index = mat.pbrData.baseColorTexture.value().textureIndex;
-        material.color_sampler_index = gltf.textures[material.color_texture_index].samplerIndex.value();
+        if (mat.pbrData.baseColorTexture.has_value()) {
+            material.color_texture_index = mat.pbrData.baseColorTexture.value().textureIndex;
+            material.color_sampler_index = gltf.textures[material.color_texture_index.value()].samplerIndex.value();
+        }
     }
 
     for (fastgltf::Skin& skin: gltf.skins) {

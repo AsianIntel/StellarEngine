@@ -25,7 +25,8 @@ struct Material {
     float4 color;
     uint color_texture;
     uint color_sampler;
-    float3 padding;
+    uint flags;
+    float padding;
 };
 
 struct Transform {
@@ -57,7 +58,7 @@ struct PushConstants {
 PSInput VSMain(uint vertex_id: SV_VertexId) {
     Vertex vertex = bindless_buffers[push_constants.vertex_buffer_index].Load<Vertex>(80 * (push_constants.vertex_buffer_offset + vertex_id));
     View view = bindless_buffers[push_constants.view_buffer_index].Load<View>(0);
-    Material material = bindless_buffers[push_constants.material_buffer_index].Load<Material>(push_constants.material_buffer_offset * 16);
+    Material material = bindless_buffers[push_constants.material_buffer_index].Load<Material>(push_constants.material_buffer_offset * 32);
     Transform transform = bindless_buffers[push_constants.transform_buffer_index].Load<Transform>(push_constants.transform_buffer_offset * 64);
 
 #ifndef MESH_SKINNING
@@ -80,9 +81,7 @@ PSInput VSMain(uint vertex_id: SV_VertexId) {
 float4 PSMain(PSInput input): SV_TARGET {
     Light light = bindless_buffers[push_constants.light_buffer_index].Load<Light>(0);
     View view = bindless_buffers[push_constants.view_buffer_index].Load<View>(0);
-    Material material = bindless_buffers[push_constants.material_buffer_index].Load<Material>(push_constants.material_buffer_offset * 16);
-    Texture2D<float4> color_texture = bindless_textures[material.color_texture];
-    SamplerState sampler = bindless_samplers[material.color_sampler];
+    Material material = bindless_buffers[push_constants.material_buffer_index].Load<Material>(push_constants.material_buffer_offset * 32);
 
     float ambient_strength = 0.1f;
     float3 ambient = ambient_strength * light.color.xyz;
@@ -98,6 +97,13 @@ float4 PSMain(PSInput input): SV_TARGET {
     float spec = pow(max(dot(view_dir, reflect_dir), 0.0f), 32);
     float3 specular = specular_strength * spec * light.color.xyz;
 
-    float3 color = (ambient + diffuse + specular) * color_texture.Sample(sampler, input.uv).xyz;
+    float3 input_color = input.color.xyz;
+    if ((material.flags & 0x1) == 0x1) {
+        Texture2D<float4> color_texture = bindless_textures[material.color_texture];
+        SamplerState sampler = bindless_samplers[material.color_sampler];
+        input_color = color_texture.Sample(sampler, input.uv).xyz;
+    }
+
+    float3 color = (ambient + diffuse + specular) * input_color;
     return float4(color, 1.0f);
 }

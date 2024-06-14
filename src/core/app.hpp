@@ -78,29 +78,18 @@ struct App {
             flecs::entity entity = world.entity().set<CPUTexture>(texture);
             textures.push_back(entity);
         }
-        for (const auto& material: gltf.materials) {
-            flecs::entity entity = world.entity().set<Material>(Material {
-                .color = material.color,
-                .color_texture = textures[material.color_texture_index],
-                .color_sampler = samplers[material.color_sampler_index]
-            });
+        for (const auto& gltf_material: gltf.materials) {
+            Material material { .color = gltf_material.color };
+            if (gltf_material.color_texture_index.has_value()) {
+                material.color_texture = textures[gltf_material.color_texture_index.value()];
+                material.color_sampler = samplers[gltf_material.color_sampler_index.value()];
+            }
+            flecs::entity entity = world.entity().set<Material>(material);
             materials.push_back(entity);
         }
         for (const auto& mesh: gltf.meshes) {
             flecs::entity entity = world.entity().set<Mesh>(mesh.mesh);
             meshes.push_back(entity);
-        }
-
-        {
-            flecs::entity cube_mesh = world.entity().set<Mesh>(cube(1.0f));
-            world.entity("Cube")
-                .is_a(cube_mesh)
-                .is_a(materials[0])
-                .set<Transform>(Transform {
-                    .translation = glm::vec3(2.0, 0.0, 2.0),
-                    .rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
-                    .scale = glm::vec3(1.0, 1.0, 1.0f)
-                });
         }
 
         std::vector<flecs::entity> joints;

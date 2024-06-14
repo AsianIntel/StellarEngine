@@ -47,15 +47,16 @@ export struct SkinnedMesh {
 
 export struct Material {
     glm::vec4 color;
-    flecs::entity color_texture;
-    flecs::entity color_sampler;
+    std::optional<flecs::entity> color_texture;
+    std::optional<flecs::entity> color_sampler;
 };
 
 struct GPUMaterial {
     glm::vec4 color;
     uint32_t color_texture;
     uint32_t color_sampler;
-    glm::vec2 padding;
+    MaterialFlags flags;
+    float padding;
 };
 
 export struct Light {
@@ -367,13 +368,17 @@ void prepare_materials(flecs::iter& it) {
         auto material = it.field<Material>(1);
         for (const auto i: it) {
             uint32_t index = all_materials.size();
-            const GPUTexture* texture = material[i].color_texture.get<GPUTexture>();
-            const GPUSampler* sampler = material[i].color_sampler.get<GPUSampler>();
-            all_materials.push_back(GPUMaterial {
-                .color = material[i].color,
-                .color_texture = texture->binding,
-                .color_sampler = sampler->binding
-            });
+
+            GPUMaterial gpu_material { .color = material[i].color, .flags = MaterialFlags::None };
+            if (material[i].color_texture.has_value()) {
+                const GPUTexture* texture = material[i].color_texture.value().get<GPUTexture>();
+                const GPUSampler* sampler = material[i].color_sampler.value().get<GPUSampler>();
+                gpu_material.color_texture = texture->binding;
+                gpu_material.color_sampler = sampler->binding;
+                gpu_material.flags = gpu_material.flags | MaterialFlags::ColorTexture;
+            }
+
+            all_materials.push_back(gpu_material);
             it.entity(i).set<DynamicUniformIndex<Material>>({ index });
         }
     } while (it.next());
@@ -399,7 +404,7 @@ void prepare_transforms(flecs::iter& it) {
         auto transform = it.field<GlobalTransform>(1);
         for (const auto i: it) {
             uint32_t index = all_transforms.size();
-            all_transforms.push_back(glm::inverse(transform[i].transform));
+            all_transforms.push_back(transform[i].transform);
             it.entity(i).set<DynamicUniformIndex<GlobalTransform>>({ index });
         }
     } while (it.next());

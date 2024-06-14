@@ -139,3 +139,9 @@ export enum class Filter {
     Nearest,
     Linear
 };
+
+export enum class MaterialFlags: uint32_t {
+    None = 0,
+    ColorTexture = 0x1
+};
+DEFINE_ENUM_OP(MaterialFlags)
