@@ -841,15 +841,20 @@ void Device::destroy_buffer(const Buffer& buffer) const {
 }
 
 Result<Pipeline, VkResult> Device::create_graphics_pipeline(const RenderPipelineDescriptor& descriptor) const {
+    std::vector<VkPipelineShaderStageCreateInfo> shader_stages;
     VkPipelineShaderStageCreateInfo vertex_stage{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
     vertex_stage.stage = VK_SHADER_STAGE_VERTEX_BIT;
     vertex_stage.module = descriptor.vertex_shader->module;
     vertex_stage.pName = descriptor.vertex_shader->entrypoint.c_str();
+    shader_stages.push_back(vertex_stage);
 
-    VkPipelineShaderStageCreateInfo fragment_stage{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    fragment_stage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fragment_stage.module = descriptor.fragment_shader->module;
-    fragment_stage.pName = descriptor.fragment_shader->entrypoint.c_str();
+    if (descriptor.fragment_shader.has_value()) {
+        VkPipelineShaderStageCreateInfo fragment_stage{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        fragment_stage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragment_stage.module = descriptor.fragment_shader.value()->module;
+        fragment_stage.pName = descriptor.fragment_shader.value()->entrypoint.c_str();
+        shader_stages.push_back(fragment_stage);
+    }
 
     VkPipelineViewportStateCreateInfo viewport{.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     viewport.viewportCount = 1;
@@ -859,14 +864,15 @@ Result<Pipeline, VkResult> Device::create_graphics_pipeline(const RenderPipeline
     color_blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     color_blend_attachment.blendEnable = false;
+    std::vector<VkPipelineColorBlendAttachmentState> color_blend_attachments(descriptor.render_format.size(), color_blend_attachment);
 
     VkPipelineColorBlendStateCreateInfo color_blending{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO
     };
     color_blending.logicOpEnable = false;
     color_blending.logicOp = VK_LOGIC_OP_COPY;
-    color_blending.attachmentCount = 1;
-    color_blending.pAttachments = &color_blend_attachment;
+    color_blending.attachmentCount = color_blend_attachments.size();
+    color_blending.pAttachments = color_blend_attachments.data();
 
     VkPipelineVertexInputStateCreateInfo vertex_input{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
@@ -900,10 +906,13 @@ Result<Pipeline, VkResult> Device::create_graphics_pipeline(const RenderPipeline
     multisampling.alphaToCoverageEnable = false;
     multisampling.alphaToOneEnable = false;
 
-    VkFormat color_attachment_format = map_texture_format(descriptor.render_format);
+    std::vector<VkFormat> color_attachment_formats;
+    for (const auto format: descriptor.render_format) {
+        color_attachment_formats.push_back(map_texture_format(format));
+    }
     VkPipelineRenderingCreateInfo rendering_info{.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    rendering_info.colorAttachmentCount = 1;
-    rendering_info.pColorAttachmentFormats = &color_attachment_format;
+    rendering_info.colorAttachmentCount = color_attachment_formats.size();
+    rendering_info.pColorAttachmentFormats = color_attachment_formats.data();
 
     VkPipelineDepthStencilStateCreateInfo depth_stencil{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO
@@ -915,6 +924,10 @@ Result<Pipeline, VkResult> Device::create_graphics_pipeline(const RenderPipeline
         depth_stencil.depthCompareOp = map_compare_function(depth_stencil_state.compare);
 
         rendering_info.depthAttachmentFormat = map_texture_format(depth_stencil_state.format);
+
+        rasterizer.depthBiasEnable = true;
+        rasterizer.depthBiasConstantFactor = 0.0f;
+        rasterizer.depthBiasSlopeFactor = -1.0f;
     }
     else {
         depth_stencil.depthTestEnable = false;
@@ -926,7 +939,6 @@ Result<Pipeline, VkResult> Device::create_graphics_pipeline(const RenderPipeline
     depth_stencil.minDepthBounds = 0.0f;
     depth_stencil.maxDepthBounds = 1.0f;
 
-    std::array shader_stages{vertex_stage, fragment_stage};
     VkGraphicsPipelineCreateInfo create_info{.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     create_info.pNext = &rendering_info;
     create_info.stageCount = shader_stages.size();

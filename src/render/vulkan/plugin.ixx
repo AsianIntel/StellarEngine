@@ -61,7 +61,20 @@ struct GPUMaterial {
 
 export struct Light {
     glm::vec4 color;
+    glm::vec4 direction;
+};
+
+struct LightUniform {
+    glm::vec4 color;
     glm::vec4 position;
+    glm::mat4 view_projection;
+    uint32_t depth_texture;
+    glm::vec3 padding;
+};
+
+struct GPULight {
+    Texture depth_texture;
+    TextureView depth_texture_view;
 };
 
 export struct Joint {
@@ -111,6 +124,8 @@ struct RenderContext {
     Pipeline mesh_pipeline{};
     Pipeline skinned_mesh_pipeline{};
     Pipeline skinning_pipeline{};
+    Pipeline shadow_pipeline{};
+    Pipeline skinned_shadow_pipeline{};
 
     Buffer vertex_buffer{};
     Buffer skinned_vertex_buffer{};
@@ -139,6 +154,7 @@ struct RenderContext {
 struct RenderRunner {
     flecs::query<GPUMesh, DynamicUniformIndex<Material>, DynamicUniformIndex<GlobalTransform>> mesh_query;
     flecs::query<GPUMesh, DynamicUniformIndex<Material>, DynamicUniformIndex<GlobalTransform>> skinned_mesh_query;
+    flecs::query<GPULight, DynamicUniformIndex<Light>> light_query;
 };
 
 void begin_render(RenderContext& context) {
@@ -184,6 +200,121 @@ void skin_meshes(flecs::iter& it) {
     } while(it.next());
 }
 
+void prepare_shadows(RenderContext& context, const RenderRunner& runner) {
+    runner.light_query
+        .run([&](flecs::iter& it) {
+            while (it.next()) {
+                auto light = it.field<GPULight>(0);
+                auto light_index = it.field<DynamicUniformIndex<Light>>(1);
+                for (const auto i: it) {
+                    {
+                        std::array barriers {
+                           TextureBarrier {
+                               .texture = &light[i].depth_texture,
+                               .range = ImageSubresourceRange {
+                                   .aspect = FormatAspect::Depth,
+                                   .base_mip_level = 0,
+                                   .mip_level_count = 1,
+                                   .base_array_layer = 0,
+                                   .array_layer_count = 1
+                               },
+                               .before = TextureUsage::Undefined,
+                               .after = TextureUsage::DepthWrite
+                           },
+                       };
+                       context.encoder.transition_textures(barriers);
+                    }
+
+                    DepthAttachment depth_attachment {
+                        .target = Attachment { .view = &light[i].depth_texture_view },
+                        .ops = AttachmentOps::Store,
+                        .depth_clear = 0.0f
+                    };
+
+                    context.encoder.begin_render_pass(RenderPassDescriptor {
+                        .extent = context.extent,
+                        .depth_attachment = depth_attachment
+                    });
+
+                    uint32_t light_offset = light_index[i].offset;
+                    runner.mesh_query
+                        .run([&context, &light_offset](flecs::iter& it) {
+                            context.encoder.bind_pipeline(context.shadow_pipeline);
+                            context.encoder.bind_index_buffer(context.index_buffer);
+
+                            while (it.next()) {
+                                auto mesh = it.field<GPUMesh>(0);
+                                auto transform_index = it.field<DynamicUniformIndex<GlobalTransform>>(2);
+                                for (const auto i: it) {
+                                    std::array push_constants {
+                                        context.vertex_buffer_index,
+                                        mesh[i].vertex_offset,
+                                        context.transform_buffer_index,
+                                        transform_index[i].offset,
+                                        context.light_buffer_index,
+                                        light_offset,
+                                    };
+                                    context.encoder.set_push_constants(push_constants);
+                                    if (mesh[i].index_count.has_value()) {
+                                        context.encoder.draw_indexed(mesh[i].index_count.value(), 1, mesh[i].index_offset.value(), 0, 0);
+                                    } else {
+                                        context.encoder.draw(mesh[i].vertex_count, 1, 0, 0);
+                                    }
+                                }
+                            }
+                        });
+
+                    runner.skinned_mesh_query
+                        .run([&context, &light_offset](flecs::iter& it) {
+                            context.encoder.bind_pipeline(context.skinned_shadow_pipeline);
+                            context.encoder.bind_index_buffer(context.index_buffer);
+
+                            while (it.next()) {
+                                auto mesh = it.field<GPUMesh>(0);
+                                auto transform_index = it.field<DynamicUniformIndex<GlobalTransform>>(2);
+                                for (const auto i: it) {
+                                    std::array push_constants {
+                                        context.post_skinning_buffer_index,
+                                        mesh[i].vertex_offset,
+                                        context.transform_buffer_index,
+                                        transform_index[i].offset,
+                                        context.light_buffer_index,
+                                        light_offset,
+                                    };
+                                    context.encoder.set_push_constants(push_constants);
+                                    if (mesh[i].index_count.has_value()) {
+                                        context.encoder.draw_indexed(mesh[i].index_count.value(), 1, mesh[i].index_offset.value(), 0, 0);
+                                    } else {
+                                        context.encoder.draw(mesh[i].vertex_count, 1, 0, 0);
+                                    }
+                                }
+                            }
+                        });
+
+                    context.encoder.end_render_pass();
+
+                    {
+                        std::array barriers {
+                           TextureBarrier {
+                               .texture = &light[i].depth_texture,
+                               .range = ImageSubresourceRange {
+                                   .aspect = FormatAspect::Depth,
+                                   .base_mip_level = 0,
+                                   .mip_level_count = 1,
+                                   .base_array_layer = 0,
+                                   .array_layer_count = 1
+                               },
+                               .before = TextureUsage::DepthWrite,
+                               .after = TextureUsage::ShaderReadOnly
+                           },
+                       };
+                       context.encoder.transition_textures(barriers);
+                    }
+                }
+            }
+        });
+}
+
 void render_meshes(RenderContext& context, const RenderRunner& runner) {
     {
         std::array barriers {
@@ -198,6 +329,18 @@ void render_meshes(RenderContext& context, const RenderRunner& runner) {
                 },
                 .before = TextureUsage::Undefined,
                 .after = TextureUsage::RenderTarget
+            },
+            TextureBarrier {
+                .texture = &context.depth_texture,
+                .range = ImageSubresourceRange {
+                    .aspect = FormatAspect::Depth,
+                    .base_mip_level = 0,
+                    .mip_level_count = 1,
+                    .base_array_layer = 0,
+                    .array_layer_count = 1
+                },
+                .before = TextureUsage::Undefined,
+                .after = TextureUsage::DepthWrite
             }
         };
         context.encoder.transition_textures(barriers);
@@ -458,7 +601,7 @@ void prepare_skinned_meshes(flecs::iter& it) {
 }
 
 void prepare_lights(flecs::iter& it) {
-    std::vector<Light> all_lights{};
+    std::vector<LightUniform> all_lights{};
 
     if (!it.next()) return;
     auto context = it.field<RenderContext>(0);
@@ -466,18 +609,48 @@ void prepare_lights(flecs::iter& it) {
         auto light = it.field<Light>(1);
         for (const auto i: it) {
             uint32_t index = all_lights.size();
-            all_lights.push_back(light[i]);
-            it.entity(i).set<DynamicUniformIndex<Light>>({ index });
+
+            LightUniform light_uniform { .color = light[i].color, .position = glm::vec4(-2.0f, 4.0f, -1.0f, 1.0f) };
+
+            glm::mat4 view = glm::lookAtLH(glm::vec3(-2.0f, 4.0f, -1.0f), glm::vec3( 0.0f, 0.0f,  0.0f), glm::vec3( 0.0f, 1.0f,  0.0f));
+            glm::mat4 projection = glm::orthoLH(-10.0f, 10.0f, -10.0f, 10.0f, 7.5f, 1.0f);
+            light_uniform.view_projection = projection * view;
+
+            Texture depth_texture = context->device.create_texture(TextureDescriptor {
+                .size = context->extent,
+                .format = TextureFormat::D32,
+                .usage = TextureUsage::DepthWrite | TextureUsage::Resource,
+                .dimension = TextureDimension::D2,
+                .mip_level_count = 1,
+                .sample_count = 1
+            }).unwrap();
+            TextureView depth_texture_view = context->device.create_texture_view(depth_texture, TextureViewDescriptor {
+                .usage = TextureUsage::DepthWrite | TextureUsage::Resource,
+                .dimension = TextureDimension::D2,
+                .range = ImageSubresourceRange {
+                    .aspect = FormatAspect::Depth,
+                    .base_mip_level = 0,
+                    .mip_level_count = 1,
+                    .base_array_layer = 0,
+                    .array_layer_count = 1
+                }
+            }).unwrap();
+            light_uniform.depth_texture = context->device.add_binding(depth_texture_view);
+
+            all_lights.push_back(light_uniform);
+            it.entity(i)
+                .set<DynamicUniformIndex<Light>>({ index })
+                .set<GPULight>(GPULight { .depth_texture = depth_texture, .depth_texture_view = depth_texture_view });
         }
     } while (it.next());
 
     context->light_buffer = context->device.create_buffer(BufferDescriptor {
-        .size = all_lights.size() * sizeof(Light),
+        .size = all_lights.size() * sizeof(LightUniform),
         .usage = BufferUsage::Storage | BufferUsage::MapReadWrite
     }).unwrap();
     {
         void* data = context->device.map_buffer(context->light_buffer);
-        memcpy(data, all_lights.data(), all_lights.size() * sizeof(Light));
+        memcpy(data, all_lights.data(), all_lights.size() * sizeof(LightUniform));
         context->device.unmap_buffer(context->light_buffer);
     }
     context->light_buffer_index = context->device.add_binding(context->light_buffer);
@@ -703,10 +876,24 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         .stage = ShaderStage::Compute
     }).unwrap();
 
+    auto shadow_file = read_file("../../assets/shaders/shadow.hlsl");
+    ShaderModule shadow_shader = device.create_shader_module(ShaderModuleDescriptor {
+        .code = shadow_file,
+        .entrypoint = "VSMain",
+        .stage = ShaderStage::Vertex
+    }).unwrap();
+    ShaderModule skinned_shadow_shader = device.create_shader_module(ShaderModuleDescriptor {
+        .code = shadow_file,
+        .entrypoint = "VSMain",
+        .stage = ShaderStage::Vertex,
+        .defines = { "MESH_SKINNING" }
+    }).unwrap();
+
+    std::array render_format { TextureFormat::Rgba8Unorm };
     Pipeline mesh_pipeline = device.create_graphics_pipeline(RenderPipelineDescriptor{
         .vertex_shader = &vertex_shader,
         .fragment_shader = &fragment_shader,
-        .render_format = TextureFormat::Rgba8Unorm,
+        .render_format = render_format,
         .depth_stencil = DepthStencilState {
             .format = TextureFormat::D32,
             .depth_write_enabled = true,
@@ -716,7 +903,7 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
     Pipeline skinned_mesh_pipeline = device.create_graphics_pipeline(RenderPipelineDescriptor{
         .vertex_shader = &skinned_vertex_shader,
         .fragment_shader = &fragment_shader,
-        .render_format = TextureFormat::Rgba8Unorm,
+        .render_format = render_format,
         .depth_stencil = DepthStencilState {
             .format = TextureFormat::D32,
             .depth_write_enabled = true,
@@ -726,11 +913,29 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
     Pipeline skinning_pipeline = device.create_compute_pipeline(ComputePipelineDescriptor {
         .compute_shader = &skinning_shader
     }).unwrap();
+    Pipeline shadow_pipeline = device.create_graphics_pipeline(RenderPipelineDescriptor {
+        .vertex_shader = &shadow_shader,
+        .depth_stencil = DepthStencilState {
+            .format = TextureFormat::D32,
+            .depth_write_enabled = true,
+            .compare = CompareFunction::GreaterEqual
+        }
+    }).unwrap();
+    Pipeline skinned_shadow_pipeline = device.create_graphics_pipeline(RenderPipelineDescriptor {
+        .vertex_shader = &skinned_shadow_shader,
+        .depth_stencil = DepthStencilState {
+            .format = TextureFormat::D32,
+            .depth_write_enabled = true,
+            .compare = CompareFunction::GreaterEqual
+        }
+    }).unwrap();
 
     device.destroy_shader_module(vertex_shader);
     device.destroy_shader_module(skinned_vertex_shader);
     device.destroy_shader_module(fragment_shader);
     device.destroy_shader_module(skinning_shader);
+    device.destroy_shader_module(shadow_shader);
+    device.destroy_shader_module(skinned_shadow_shader);
 
     world.component<Mesh>().add(flecs::OnInstantiate, flecs::Inherit);
     world.component<GPUMesh>().add(flecs::OnInstantiate, flecs::Inherit);
@@ -781,6 +986,8 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         .mesh_pipeline = mesh_pipeline,
         .skinned_mesh_pipeline = skinned_mesh_pipeline,
         .skinning_pipeline = skinning_pipeline,
+        .shadow_pipeline = shadow_pipeline,
+        .skinned_shadow_pipeline = skinned_shadow_pipeline,
         .depth_texture = depth_texture,
         .depth_texture_view = depth_texture_view,
     };
@@ -789,6 +996,7 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
     RenderRunner runner {};
     runner.mesh_query = world.query_builder<GPUMesh, DynamicUniformIndex<Material>, DynamicUniformIndex<GlobalTransform>>().without<SkinnedMesh>().build();
     runner.skinned_mesh_query = world.query_builder<GPUMesh, DynamicUniformIndex<Material>, DynamicUniformIndex<GlobalTransform>>().with<SkinnedMesh>().build();
+    runner.light_query = world.query<GPULight, DynamicUniformIndex<Light>>();
     world.set(runner);
 
     world.system<RenderContext, Mesh>("Prepare Meshes")
@@ -849,6 +1057,12 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         .kind(flecs::OnStore)
         .run(skin_meshes);
 
+    auto prepare_shadow_system = world.system<RenderContext, RenderRunner>("Prepare Shadows")
+        .term_at(0).singleton().inout(flecs::InOut)
+        .term_at(1).singleton()
+        .kind(flecs::OnStore)
+        .each(prepare_shadows);
+
     auto render_mesh_system = world.system<RenderContext, RenderRunner>("Render Meshes")
         .term_at(0).singleton().inout(flecs::InOut)
         .term_at(1).singleton()
@@ -861,7 +1075,8 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
         .each(end_render);
 
     skin_mesh_system.depends_on(begin_render_system);
-    render_mesh_system.depends_on(skin_mesh_system);
+    prepare_shadow_system.depends_on(skin_mesh_system);
+    render_mesh_system.depends_on(prepare_shadow_system);
     end_render_system.depends_on(render_mesh_system);
 
     return Ok();
@@ -870,6 +1085,10 @@ export Result<void, VkResult> initialize_vulkan(const flecs::world& world) {
 export void destroy_vulkan(const flecs::world& world) {
     RenderContext* context = world.get_mut<RenderContext>();
 
+    world.query<GPULight>().each([&](const GPULight& light) {
+        context->device.destroy_texture_view(light.depth_texture_view);
+        context->device.destroy_texture(light.depth_texture);
+    });
     world.query<GPUTexture>().each([&](const GPUTexture& texture) {
         context->device.destroy_texture_view(texture.view);
         context->device.destroy_texture(texture.texture);
@@ -888,6 +1107,8 @@ export void destroy_vulkan(const flecs::world& world) {
     context->device.destroy_buffer(context->view_buffer);
     context->device.destroy_buffer(context->index_buffer);
     context->device.destroy_buffer(context->vertex_buffer);
+    context->device.destroy_pipeline(context->skinned_shadow_pipeline);
+    context->device.destroy_pipeline(context->shadow_pipeline);
     context->device.destroy_pipeline(context->skinning_pipeline);
     context->device.destroy_pipeline(context->skinned_mesh_pipeline);
     context->device.destroy_pipeline(context->mesh_pipeline);

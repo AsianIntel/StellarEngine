@@ -30,7 +30,6 @@ struct App {
 
         world.entity("Light").set<Light>(Light {
             .color = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f),
-            .position = glm::vec4(0.0, 2.0, 2.0, 1.0)
         });
         flecs::entity camera_entity = world.entity("Camera")
             .set<Camera>(Camera {

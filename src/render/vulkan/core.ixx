@@ -89,8 +89,8 @@ export struct BufferDescriptor {
 
 export struct RenderPipelineDescriptor {
     ShaderModule* vertex_shader;
-    ShaderModule* fragment_shader;
-    TextureFormat render_format;
+    std::optional<ShaderModule*> fragment_shader;
+    std::span<TextureFormat> render_format;
     std::optional<DepthStencilState> depth_stencil;
 };
 

@@ -35,7 +35,10 @@ struct Transform {
 
 struct Light {
     float4 color;
-    float4 position;
+	float4 position;
+    float4x4 view_projection;
+    uint depth_texture;
+    float3 padding;
 };
 
 struct PushConstants {
@@ -52,7 +55,7 @@ struct PushConstants {
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> push_constants: register(b0, space0);
 [[vk::binding(0, 0)]] ByteAddressBuffer bindless_buffers[]: register(t1);
-[[vk::binding(0, 1)]] Texture2D<float4> bindless_textures[]: register(t2);
+[[vk::binding(0, 1)]] Texture2D bindless_textures[]: register(t2);
 [[vk::binding(0, 2)]] SamplerState bindless_samplers[]: register(t3);
 
 PSInput VSMain(uint vertex_id: SV_VertexId) {
@@ -76,6 +79,22 @@ PSInput VSMain(uint vertex_id: SV_VertexId) {
     result.frag_pos = frag_pos;
     result.uv = vertex.uv;
     return result;
+}
+
+float shadow_calculation(Light light, float4 frag_pos) {
+	// TODO: Get the correct sampler
+	SamplerState sampler = bindless_samplers[0];
+	Texture2D depth_texture = bindless_textures[light.depth_texture];
+
+	float3 projection_coordinates = frag_pos.xyz / frag_pos.w;
+	projection_coordinates.y = -projection_coordinates.y;
+	projection_coordinates.xy = projection_coordinates.xy * 0.5f + 0.5f;
+
+	float closest_depth = depth_texture.Sample(sampler, projection_coordinates.xy).r;
+	float current_depth = projection_coordinates.z;
+	float shadow = current_depth < closest_depth ? 1.0f : 0.0f;
+
+	return shadow;
 }
 
 float4 PSMain(PSInput input): SV_TARGET {
@@ -104,6 +123,8 @@ float4 PSMain(PSInput input): SV_TARGET {
         input_color = color_texture.Sample(sampler, input.uv).xyz;
     }
 
-    float3 color = (ambient + diffuse + specular) * input_color;
+	float4 light_frag_pos = mul(light.view_projection, input.frag_pos);
+	float shadow = shadow_calculation(light, light_frag_pos);
+    float3 color = (ambient + (1.0f - shadow) * (diffuse + specular)) * input_color;
     return float4(color, 1.0f);
 }
