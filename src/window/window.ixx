@@ -113,6 +113,12 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_KEYDOWN: {
             const Key key = map_key(wParam);
             window->entity.world().event<KeyboardEvent>().id<Window>().ctx(KeyboardEvent { .key = key, .state = KeyState::Pressed }).entity(window->entity).emit();
+            return 0;
+        }
+        case WM_KEYUP: {
+            const Key key = map_key(wParam);
+            window->entity.world().event<KeyboardEvent>().id<Window>().ctx(KeyboardEvent { .key = key, .state = KeyState::Released }).entity(window->entity).emit();
+            return 0;
         }
         default: {
             return DefWindowProc(hwnd, msg, wParam, lParam);

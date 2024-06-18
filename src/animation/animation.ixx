@@ -65,6 +65,14 @@ export struct ActiveAnimation {
 export struct AnimationPlayer {
     flecs::entity animation;
     ActiveAnimation active_animation;
+
+    void play() {
+        active_animation.playing = true;
+    }
+
+    void pause() {
+        active_animation.playing = false;
+    }
 };
 
 export struct AnimationTarget {

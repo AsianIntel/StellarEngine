@@ -17,6 +17,8 @@ import stellar.scene.transform;
 import stellar.core.result;
 import stellar.input.keyboard;
 
+struct Character {};
+
 struct App {
     flecs::world world{};
 
@@ -31,38 +33,6 @@ struct App {
         world.entity("Light").set<Light>(Light {
             .color = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f),
         });
-        flecs::entity camera_entity = world.entity("Camera")
-            .set<Camera>(Camera {
-                .projection = glm::perspectiveLH(glm::radians(60.0f), 1280.0f / 960.0f, 10000.0f, 0.01f)
-            })
-            .set<Transform>(Transform {
-                .translation = glm::vec3(-5.0, 5.0, 0.0),
-                .rotation = glm::quatLookAtLH(glm::normalize(glm::vec3(5.0, -5.0, 0.0)), glm::vec3(0.0, 1.0, 0.0)),
-                .scale = glm::vec3(1.0, 1.0, 1.0)
-            });
-
-        world.observer<Window>()
-            .term_at(0).singleton()
-            .event<KeyboardEvent>()
-            .each([=](flecs::iter& it, size_t i, Window& window) {
-                KeyboardEvent* event = static_cast<KeyboardEvent*>(it.param());
-                it.world().event<KeyboardEvent>().id<Camera>().ctx(*event).entity(camera_entity).emit();
-            });
-
-        world.observer<Camera, Transform>()
-            .event<KeyboardEvent>()
-            .each([](flecs::iter& it, size_t i, Camera& camera, Transform& transform) {
-                KeyboardEvent* event = static_cast<KeyboardEvent*>(it.param());
-                if (event->key == Key::KeyW) {
-                    transform.translation.x += 0.1f;
-                } else if (event->key == Key::KeyS) {
-                    transform.translation.x -= 0.1f;
-                } else if (event->key == Key::KeyA) {
-                    transform.translation.z -= 0.1f;
-                } else if (event->key == Key::KeyD) {
-                    transform.translation.z += 0.1f;
-                }
-            });
 
         std::vector<flecs::entity> materials;
         std::vector<flecs::entity> meshes;
@@ -93,24 +63,70 @@ struct App {
 
         std::vector<flecs::entity> joints;
         std::unordered_map<flecs::entity, uint32_t> entity_to_skin;
+        std::vector<flecs::entity> top_entities;
         for (const auto& index: gltf.top_nodes) {
-            spawn_node(gltf, index, std::nullopt, materials, meshes, joints, entity_to_skin);
+            auto entity = spawn_node(gltf, index, std::nullopt, materials, meshes, joints, entity_to_skin);
+            top_entities.push_back(entity);
         }
         for (std::pair<flecs::entity, uint32_t> it: entity_to_skin) {
             it.first.set<SkinnedMesh>(SkinnedMesh {
                 .joints = joints
             });
         }
+        top_entities[1].add<Character>();
 
         flecs::entity animation = world.entity().set<AnimationClip>(gltf.animations[0]);
-        world.set<AnimationPlayer>(AnimationPlayer {
+        flecs::entity player = world.entity<AnimationPlayer>().set<AnimationPlayer>(AnimationPlayer {
             .animation = animation,
             .active_animation = ActiveAnimation {
                 .speed = 1.0,
-                .playing = true,
+                .playing = false,
                 .seek_time = 0,
             }
         });
+
+        world.observer<Window>()
+            .term_at(0).singleton()
+            .event<KeyboardEvent>()
+            .each([=](flecs::iter& it, size_t i, Window& window) {
+                KeyboardEvent* event = static_cast<KeyboardEvent*>(it.param());
+                it.world().event<KeyboardEvent>().id<AnimationPlayer>().ctx(*event).entity(player).emit();
+                it.world().event<KeyboardEvent>().id<Character>().ctx(*event).entity(top_entities[1]).emit();
+            });
+
+        world.observer<AnimationPlayer>()
+            .term_at(0).singleton()
+            .event<KeyboardEvent>()
+            .each([](flecs::iter& it, size_t i, AnimationPlayer& player) {
+                KeyboardEvent* event = static_cast<KeyboardEvent*>(it.param());
+                if (event->key == Key::KeyW) {
+                    if (event->state == KeyState::Pressed) {
+                        player.play();
+                    } else {
+                        player.pause();
+                    }
+                }
+            });
+
+        world.observer<Transform>().with<Character>()
+            .event<KeyboardEvent>()
+            .each([](flecs::iter& it, size_t i, Transform& transform) {
+                KeyboardEvent* event = static_cast<KeyboardEvent*>(it.param());
+                if (event->key == Key::KeyW) {
+                    transform.translation.z += (15.0f * it.world().delta_time());
+                }
+            });
+
+        world.entity("Camera")
+            .set<Camera>(Camera {
+                .projection = glm::perspectiveLH(glm::radians(60.0f), 1280.0f / 960.0f, 10000.0f, 0.01f)
+            })
+            .set<Transform>(Transform {
+                .translation = glm::vec3(0.0, -500.0, -500.0),
+                .rotation = glm::quatLookAtLH(glm::normalize(glm::vec3(0.0, 500.0, 500.0)), glm::vec3(0.0, 0.0, -1.0)),
+                .scale = glm::vec3(1.0, 1.0, 1.0)
+            })
+            .child_of(top_entities[1]);
     }
 
     void run() {
@@ -121,7 +137,7 @@ struct App {
         destroy_vulkan(world);
     }
 
-    void spawn_node(
+    flecs::entity spawn_node(
         Gltf& gltf,
         uint32_t index,
         const std::optional<flecs::entity>& parent,
@@ -153,5 +169,6 @@ struct App {
         for (const auto& c: node.children) {
             spawn_node(gltf, c, entity, materials, meshes, joints, entity_to_skin);
         }
+        return entity;
     }
 };
